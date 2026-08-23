@@ -7,6 +7,9 @@ local bookmarkFilePath = nil
 -- System, set by check_config()
 local slash = nil
 local bookmarksDir = nil
+-- Finder integration (macOS): reveal the bookmark file, or open its folder
+local FINDER_REVEAL_CMD = "open -R "
+local FINDER_OPEN_CMD = "open "
 -- UI
 local dialog_UI = nil
 local bookmarks_dialog = {}
@@ -453,7 +456,8 @@ function main_dialog()
     -- dialog_UI:add_button("Export", show_export_gui, 1, 11, 1, 1)
 
     -- footer message_label
-    bookmarks_dialog['footer_message'] = dialog_UI:add_label('', 1, 4, 4, 1)
+    bookmarks_dialog['footer_message'] = dialog_UI:add_label('', 1, 4, 3, 1)
+    dialog_UI:add_button("Show in Finder", showInFinder, 4, 4, 1, 1)
 
     showBookmarks()
     dialog_UI:show()
@@ -577,6 +581,41 @@ function removeBookmark()
         end
     end
 end
+-- Quote a path for the shell: single quotes, with any embedded one escaped
+function shellQuote(path)
+    return "'" .. string.gsub(path, "'", "'\\''") .. "'"
+end
+
+function fileExists(path)
+    local file = io.open(path, "r")
+    if file then
+        file:close()
+        return true
+    end
+    return false
+end
+
+-- Reveal this medium's bookmark file in Finder. Nothing is written until the
+-- first bookmark is saved, so fall back to the folder the file will live in.
+function showInFinder()
+    dlt_footer()
+    local command
+    if bookmarkFilePath and fileExists(bookmarkFilePath) then
+        command = FINDER_REVEAL_CMD .. shellQuote(bookmarkFilePath)
+    elseif bookmarksDir then
+        command = FINDER_OPEN_CMD .. shellQuote(bookmarksDir)
+        bookmarks_dialog['footer_message']:set_text(
+            setMessageStyle("No bookmarks saved yet for this video - showing the folder"))
+    else
+        bookmarks_dialog['footer_message']:set_text(setMessageStyle("Bookmarks folder is unknown"))
+        return
+    end
+    if os.execute(command) ~= 0 then
+        vlc.msg.err("Failed to reveal bookmarks in Finder: " .. command)
+        bookmarks_dialog['footer_message']:set_text(setMessageStyle("Could not open Finder"))
+    end
+end
+
 -- End buttons callbacks -------------------------------------------------
 
 function setMessageStyle(str)

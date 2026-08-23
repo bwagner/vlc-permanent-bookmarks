@@ -39,6 +39,10 @@ The hash is unchanged from upstream, so existing bookmark files stay valid.
   produces duplicate default names.
 - **Plain-space separator** in list rows. Upstream used U+3164 Hangul filler,
   which renders zero-width in the macOS dialog font.
+- **"Show in Finder" button.** Reveals this medium's bookmark file in Finder.
+  Nothing is written until the first bookmark is saved, so on a medium with no
+  bookmarks yet it opens the folder the file will live in and says so in the
+  footer. macOS only: it shells out to `open`.
 
 ## Testing
 
@@ -124,8 +128,10 @@ macOS VLC uses the Cocoa dialog provider, not Qt. Consequences that are easy to
 trip over when editing the layout:
 
 - Window width tracks grid **column count**, not content: 1 column = 160px,
-  2 = 259px, 4 = 367px. The four-column layout pins width, so long bookmark
-  names truncate.
+  2 = 259px, 4 = 367px. Labels never widen the window, but a **button** does:
+  the 112px "Show in Finder" button widened the dialog from 367x277 to 422x292.
+  Width is still not draggable, so long bookmark names still truncate - there
+  is just more room before they do.
 - The "invisible label with `margin-left: NNNpx`" width-autofit hack found in
   upstream does nothing here. CSS in `add_label` does not affect layout.
 - Qt mnemonic ampersands (`&Add`) render literally as text.

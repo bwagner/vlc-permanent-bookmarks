@@ -301,6 +301,13 @@ dialog_select_row() {
     sleep "$UI_SETTLE_S"
 }
 
+# dialog_has_button <name> - existence only. Show in Finder is deliberately
+# never clicked here: it launches Finder, which steals focus mid-run and would
+# be read as hardware input by the hands-off monitor.
+dialog_has_button() {
+    osa_retry "$(in_dialog "return exists button \"$1\"")"
+}
+
 dialog_row_count() {
     osa_retry "$(in_dialog "return count of rows of table 1 of scroll area 1")"
 }
@@ -491,6 +498,7 @@ test_fresh_medium() {
         "$([ -e "$BOOKMARK_FILE" ] && echo present || echo absent)"
     check "a fresh medium shows an empty list" "0" "$(dialog_row_count)"
     check "the default label starts at index 1" "Bookmark (1)" "$(dialog_get_input)"
+    check "the dialog offers Show in Finder" "true" "$(dialog_has_button "Show in Finder")"
 }
 
 test_add() {
