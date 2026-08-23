@@ -49,10 +49,18 @@ with a video and are the kind of thing that gets shared or synced - and any one
 of them could run arbitrary code inside VLC. This fork reads JSON data instead
 and never executes a bookmark file.
 
-Old files are not read, and they are not converted automatically. Until a
-medium is converted the extension shows its bookmarks as empty and refuses to
-save over them, saying so in the footer - so an Add can never strand the old
-bookmarks behind a new file.
+Old files are not read. Convert them once, with VLC closed:
+
+    lua scripts/migrate_bookmarks_to_json.lua            # dry run, writes nothing
+    lua scripts/migrate_bookmarks_to_json.lua --apply
+
+Each `<hash>` becomes `<hash>.json`, verified field-by-field by reading the
+result back with `jq`, and the original is renamed to `<hash>.legacy` rather
+than deleted. An existing `.json` is never overwritten. Requires `lua` and `jq`.
+
+Until a medium is converted, the extension shows its bookmarks as empty and
+refuses to save over them, saying so in the footer - so an Add can never strand
+the old bookmarks behind a new file.
 
 ## Changes against upstream
 
