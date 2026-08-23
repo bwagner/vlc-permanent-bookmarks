@@ -546,8 +546,12 @@ test_add_ordering() {
     check "add: an earlier bookmark sorts to the front" "gamma,alpha,beta" "$(bookmarks_labels)"
     check "add: three bookmarks are saved" "3" "$(bookmarks_count)"
     check "add: the list matches the saved file" "3" "$(dialog_row_count)"
+    # The row shows hh:mm:ss. The file keeps the milliseconds - see the
+    # stored-precision check below.
     check "add: row text is index, time and label" \
-        "#1 - 00:00:$(printf '%02d' "$T_GAMMA").000 - gamma" "$(dialog_row_text 1)"
+        "#1 - 00:00:$(printf '%02d' "$T_GAMMA") - gamma" "$(dialog_row_text 1)"
+    check "add: the file keeps millisecond precision" \
+        "00:00:$(printf '%02d' "$T_GAMMA").000" "$(bookmarks_field 1 3)"
 }
 
 test_rename() {

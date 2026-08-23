@@ -32,6 +32,12 @@ local MSG_LOAD_FAILED = "Existing bookmarks could not be read - not saving over 
 local MSG_LEGACY_FOUND = "Bookmarks are in the old format - run the migration script"
 local MSG_SAVE_BLOCKED = "Not saving - the existing bookmarks were not read"
 local MSG_SAVE_FAILED = "Bookmarks could not be saved"
+-- Time formats. The stored form keeps milliseconds and is also what the
+-- duplicate check compares, so it must not lose precision. The list drops
+-- them: millisecond precision is noise for seeking, and the four-column
+-- layout pins the dialog width, so every character costs label room.
+local TIME_FORMAT_STORED = "%02d:%02d:%02d.%03d"
+local TIME_FORMAT_DISPLAY = "%02d:%02d:%02d"
 -- UI
 local dialog_UI = nil
 local bookmarks_dialog = {}
@@ -474,14 +480,26 @@ function table_length(t)
     return count
 end
 
+-- // split a time in microseconds into hours, minutes, seconds and milliseconds
+local function splitTime(micros)
+    local millis = math.floor(micros / 1000)
+    return math.floor((millis / 3600000) % 24),
+           math.floor((millis / 60000) % 60),
+           math.floor((millis / 1000) % 60),
+           math.floor(millis % 1000)
+end
+
 -- // get number rappresenting time in microseconds and return a string with formatted time hh:mm:ss.millis
 function getFormattedTime(micros)
-    local millis = math.floor(micros / 1000)
-    local seconds = math.floor((millis / 1000) % 60)
-    local minutes = math.floor((millis / 60000) % 60)
-    local hours = math.floor((millis / 3600000) % 24)
-    millis = math.floor(millis % 1000)
-    return string.format("%02d:%02d:%02d.%03d", hours, minutes, seconds, millis)
+    local hours, minutes, seconds, millis = splitTime(micros)
+    return string.format(TIME_FORMAT_STORED, hours, minutes, seconds, millis)
+end
+
+-- // same time as hh:mm:ss, for the bookmark list only. Never stored, and
+-- never compared - getFormattedTime stays the canonical form.
+function getDisplayTime(micros)
+    local hours, minutes, seconds = splitTime(micros)
+    return string.format(TIME_FORMAT_DISPLAY, hours, minutes, seconds)
 end
 
 -- GUI Setup and buttons callbacks ----------------------------------------
@@ -523,7 +541,7 @@ function showBookmarks()
     if bookmarks_dialog['bookmarks_list'] then
         bookmarks_dialog['bookmarks_list']:clear()
         for idx, b in pairs(Bookmarks) do
-            local text = '#' .. idx .. ' - ' .. b.formattedTime .. ' - ' .. b.label
+            local text = '#' .. idx .. ' - ' .. getDisplayTime(b.time) .. ' - ' .. b.label
             bookmarks_dialog['bookmarks_list']:add_value(text, idx)
         end
     end

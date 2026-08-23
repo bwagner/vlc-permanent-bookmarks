@@ -40,7 +40,11 @@ JSON, named `<hash>.json`.
     }
 
 `time` is the playback position in microseconds and is what the extension seeks
-to; `formattedTime` is derived from it and only ever displayed.
+to. `formattedTime` is derived from it, and is what the extension compares when
+deciding whether a bookmark already exists at that position, so it keeps its
+milliseconds. The list itself shows a shorter `hh:mm:ss` form, derived from
+`time` rather than from this field: millisecond precision is noise for seeking,
+and the dialog width is fixed, so every character costs label room.
 
 `filename` is meta-information: the hash remains the only key, and nothing
 reads the field back. It names the medium the bookmarks belong to, which the
