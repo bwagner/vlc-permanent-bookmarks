@@ -200,8 +200,9 @@ end
 function getLastBookmarkIndex()
     local bm_count = #Bookmarks
     local last_bookmark = nil
-    for k, _ in pairs(Bookmarks) do
-        last_bookmark = Bookmarks[k].label
+    if bm_count > 0 then
+        -- the last bookmark by position; pairs() promises no order
+        last_bookmark = Bookmarks[bm_count].label
     end
 
     local last_index = nil
