@@ -65,6 +65,12 @@ readonly DIALOG_WAIT_TRIES=16
 readonly AX_RETRY_TRIES=5
 readonly AX_RETRY_DELAY_S=0.4
 
+# Hands-off monitoring. HIDIdleTime is reported in nanoseconds; an idle time
+# below IDLE_AT_START_WARN_S when the run begins means the machine was still
+# being used, which leaves a blind spot over the first phase.
+readonly NANOS_PER_SECOND=1000000000
+readonly IDLE_AT_START_WARN_S=3
+
 # --- Test bookkeeping ------------------------------------------------------
 
 tests_passed=0
@@ -132,6 +138,63 @@ xcheck() {
         printf '       expected: %s\n' "$2"
         printf '       actual:   %s\n' "$3"
     fi
+}
+
+# --- Hands-off monitoring --------------------------------------------------
+#
+# Nothing here prevents a human from using the machine mid-run; macOS offers no
+# supported way to block input, and a modal "wait" dialog would be worse than
+# useless - it has to be frontmost in some process, and this harness needs VLC
+# frontmost to drive its menu bar. So interference is detected instead.
+#
+# IOHIDSystem's HIDIdleTime is nanoseconds since the last real hardware input
+# event. The accessibility actions dispatched below - AXPress, AXSetValue,
+# application activation - do not reset it: measured over a complete run, 110
+# samples taken 0.25s apart across menu clicks, button presses, text-field
+# writes and seeks, with zero resets. The counter therefore rises steadily for
+# as long as nobody touches the machine, and any reading below the previous one
+# is a hardware event. That is an exact signal and needs no clock, which matters
+# because bash has no portable sub-second timer to compare elapsed time against.
+#
+# Blind spot: input is missed if the previous reading was already small enough
+# that the new one still exceeds it, which only happens when the machine was in
+# use moments before. input_watch_init reports that case separately.
+
+user_input_seen=0
+input_monitor_ok=1
+last_idle_ns=0
+
+hid_idle_ns() {
+    ioreg -c IOHIDSystem -r -d 1 2>/dev/null \
+        | grep -o '"HIDIdleTime" = [0-9]*' | head -1 | awk '{print $3}'
+}
+
+input_watch_init() {
+    last_idle_ns="$(hid_idle_ns)"
+    if [ -z "$last_idle_ns" ]; then
+        input_monitor_ok=0
+        info "Hands-off monitoring unavailable: IOHIDSystem reports no HIDIdleTime."
+        return
+    fi
+    if [ "$last_idle_ns" -lt $(( IDLE_AT_START_WARN_S * NANOS_PER_SECOND )) ]; then
+        printf '%sNOTE%s the machine was in use as this run started, so input during\n' \
+            "$COLOR_WARN" "$COLOR_OFF"
+        printf '     the first phase may go undetected.\n'
+    fi
+}
+
+# input_watch_check <phase> - flag any hardware input since the last reading.
+input_watch_check() {
+    [ "$input_monitor_ok" -eq 1 ] || return 0
+    local now
+    now="$(hid_idle_ns)"
+    [ -n "$now" ] || return 0
+    if [ "$now" -lt "$last_idle_ns" ]; then
+        user_input_seen=1
+        printf '%sINPUT%s keyboard, mouse or trackpad activity during %s\n' \
+            "$COLOR_WARN" "$COLOR_OFF" "$1"
+    fi
+    last_idle_ns="$now"
 }
 
 # --- AppleScript helpers ---------------------------------------------------
@@ -321,6 +384,8 @@ preflight() {
         abort "installed extension resolves to '$resolved', not the repo file '$REPO_DIR/$EXTENSION_FILE'. The test would not be testing this working tree."
     fi
     info "Extension under test: $resolved"
+    info "Leave the keyboard, mouse and trackpad alone until the summary prints."
+    input_watch_init
 }
 
 make_fixture() {
@@ -537,19 +602,27 @@ main() {
     launch_vlc
     open_dialog_and_resolve_bookmark_file
 
-    test_fresh_medium
-    test_add
-    test_add_ordering
-    test_rename
-    test_go
-    test_remove
-    test_default_label_index
-    test_label_whitespace
-    test_no_lua_errors
+    local phase
+    for phase in test_fresh_medium test_add test_add_ordering test_rename \
+                 test_go test_remove test_default_label_index \
+                 test_label_whitespace test_no_lua_errors; do
+        "$phase"
+        input_watch_check "$phase"
+    done
 
     info ""
     info "=== Summary ==="
     info "passed: $tests_passed  failed: $tests_failed  xfail: $tests_xfailed  xpass: $tests_xpassed"
+    if [ "$user_input_seen" -eq 1 ]; then
+        info ""
+        printf '%sThe machine was used while this run was in progress.%s\n' "$COLOR_WARN" "$COLOR_OFF"
+        if [ "$tests_failed" -ne 0 ]; then
+            info "Failures above may be interference rather than regressions. Re-run"
+            info "without touching the machine before believing any of them."
+        else
+            info "It passed anyway, but a hands-off run is the only trustworthy one."
+        fi
+    fi
     info ""
     info "Not covered: multi-item selection. The accessibility API replaces the"
     info "list selection rather than extending it, so the multi-select paths in"
