@@ -530,7 +530,9 @@ function removeBookmark()
             end
             table.sort(selectionSorted)
 
-            for _, idx in pairs(selectionSorted) do
+            -- ipairs, not pairs: the idx - count offset below is only
+            -- correct while the sorted selection is walked in order
+            for _, idx in ipairs(selectionSorted) do
                 table.remove(Bookmarks, idx - count)
                 count = count + 1
             end
