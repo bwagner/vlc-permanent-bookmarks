@@ -402,26 +402,24 @@ function main_dialog()
     dialog_UI = vlc.dialog(dialog_title)
 
     -- ~ !important: Add button must be the first item that is created
-    dialog_UI:add_button("Add", addBookmark, 1, 1, 1, 1)
+    dialog_UI:add_button("Add", addBookmark, 4, 1, 1, 1)
     -- bookmarks labels input box
     local new_index = tostring(getLastBookmarkIndex() + 1)
-    bookmarks_dialog['text_input'] = dialog_UI:add_text_input('Bookmark (' .. new_index .. ')', 2, 1, 1, 1)
+    bookmarks_dialog['text_input'] = dialog_UI:add_text_input('Bookmark (' .. new_index .. ')', 1, 1, 3, 1)
+
+    -- bookmarks list
+    bookmarks_dialog['bookmarks_list'] = dialog_UI:add_list(1, 2, 4, 1)
 
     -- buttons
-    dialog_UI:add_button("Go", goToBookmark, 1, 2, 1, 1)
-    dialog_UI:add_button("Rename", editBookmark, 1, 3, 1, 1)
-    dialog_UI:add_button("Remove", removeBookmark, 1, 4, 1, 1)
-    dialog_UI:add_button("Close", vlc.deactivate, 1, 5, 1, 1)
+    dialog_UI:add_button("Go", goToBookmark, 1, 3, 1, 1)
+    dialog_UI:add_button("Rename", editBookmark, 2, 3, 1, 1)
+    dialog_UI:add_button("Remove", removeBookmark, 3, 3, 1, 1)
+    dialog_UI:add_button("Close", vlc.deactivate, 4, 3, 1, 1)
     -- dialog_UI:add_button("Import", show_import_gui, 1, 10, 1, 1)
     -- dialog_UI:add_button("Export", show_export_gui, 1, 11, 1, 1)
 
-    -- bookmarks list
-    -- ~ !important: invisible_label must be created before bookmarks_list
-    bookmarks_dialog['invisible_label'] = dialog_UI:add_label('', 2, 2, 0, 0)
-    bookmarks_dialog['bookmarks_list'] = dialog_UI:add_list(2, 2, 1, 14)
-
     -- footer message_label
-    bookmarks_dialog['footer_message'] = dialog_UI:add_label('', 2, 16, 1, 1)
+    bookmarks_dialog['footer_message'] = dialog_UI:add_label('', 1, 4, 4, 1)
 
     showBookmarks()
     dialog_UI:show()
@@ -430,28 +428,9 @@ end
 function showBookmarks()
     if bookmarks_dialog['bookmarks_list'] then
         bookmarks_dialog['bookmarks_list']:clear()
-        local maxText = ''
-        local count = 0
         for idx, b in pairs(Bookmarks) do
             local text = '#' .. idx .. ' - ' .. b.formattedTime .. 'ㅤ-ㅤ' .. b.label
             bookmarks_dialog['bookmarks_list']:add_value(text, idx)
-
-            -- for dialog width autofit
-            if #text > #maxText then
-                maxText = text
-            end
-            text = idx .. b.label
-            if #text > count then
-                count = #text
-            end
-        end
-        -- max dialog width = 480px
-        count = math.floor(count * 8.5) + 140 -- TODO: ??
-        if count < 480 then
-            bookmarks_dialog['invisible_label']:set_text("<p style='font-size: 15px; margin-left: 24px;'>" .. maxText ..
-                                                             "</p>")
-        else
-            bookmarks_dialog['invisible_label']:set_text("<p style='font-size: 15px; margin-left: 480px;'>.</p>")
         end
     end
 end
