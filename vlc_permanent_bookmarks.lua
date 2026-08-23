@@ -3,6 +3,10 @@ local mediaFile = {}
 local input = nil
 local Bookmarks = {}
 local selectedBookmarkId = nil
+-- The rows armed for deletion, sorted ascending, or nil. Separate from
+-- selectedBookmarkId: a pending rename and a pending removal do not disturb
+-- each other, since a rename does not shift any index.
+local pendingRemoval = nil
 local bookmarkFilePath = nil
 -- System, set by check_config()
 local slash = nil
@@ -42,6 +46,12 @@ local MSG_ADD_NO_MEDIA = "Nothing to bookmark - no media is playing"
 local MSG_RENAME_PENDING = "Renaming #%d - click Confirm to commit"
 local MSG_RENAME_NOT_PENDING = "Click Rename first to load a bookmark's name"
 local MSG_RENAME_SELECTION_CHANGED = "Selection changed - reselect #%d to confirm"
+-- Remove is two-step as well, but its commit sits on a button of its own:
+-- a confirmation that one button's double-click can satisfy is not one.
+local MSG_REMOVE_PENDING_ONE = "Removing 1 bookmark - click Delete to commit"
+local MSG_REMOVE_PENDING_MANY = "Removing %d bookmarks - click Delete to commit"
+local MSG_REMOVE_NOT_PENDING = "Click Remove first to choose what to delete"
+local MSG_REMOVE_SELECTION_CHANGED = "Selection changed - reselect to delete"
 -- Time formats. The stored form keeps milliseconds and is also what the
 -- duplicate check compares, so it must not lose precision. The list drops
 -- them: millisecond precision is noise for seeking, and the four-column
@@ -554,6 +564,9 @@ function main_dialog()
     -- Directly under Rename, so it reads as that button's second step. Column 2
     -- is already sized by "Rename", so this costs no width.
     dialog_UI:add_button("Confirm", confirmRename, 2, 4, 1, 1)
+    -- Directly under Remove, for the same reason. Column 3 is already sized by
+    -- "Remove", so this costs no width either.
+    dialog_UI:add_button("Delete", confirmRemoval, 3, 4, 1, 1)
     dialog_UI:add_button("Show in Finder", showInFinder, 4, 4, 1, 1)
 
     -- footer message_label, its own full-width row so long messages have room
@@ -586,6 +599,7 @@ function reloadCurrentMedium()
     mediaFile = {}
     Bookmarks = {}
     selectedBookmarkId = nil
+    pendingRemoval = nil
     bookmarkFilePath = nil
     legacyBookmarkFilePath = nil
     pendingFooterMessage = nil
@@ -613,6 +627,21 @@ function reloadCurrentMedium()
 end
 
 -- Buttons callbacks -------------------------------------------------------------
+
+-- // Leave the remove cycle. Every button other than Delete calls this, because
+-- every callback clears the footer first: without it the arming would outlive
+-- the message announcing it and a later Delete would commit a removal the user
+-- had already walked away from.
+--
+-- The selection is deliberately not cleared here, because it cannot be: the
+-- dialog API has no deselect call, and rebuilding the list with clear() plus
+-- add_value() leaves the selected row selected (measured - see the XFAIL in
+-- scripts/smoke-test.sh). Rename could not use it anyway: confirmRename()
+-- refuses unless the loaded row is still the selected one.
+function disarmRemoval()
+    pendingRemoval = nil
+end
+
 function addBookmark()
     dlt_footer()
     -- Reachable since the dialog stays open across a track change: with nothing
@@ -623,8 +652,10 @@ function addBookmark()
         return
     end
     -- An add shifts every index after the insertion point, so a rename loaded
-    -- before it would commit to the wrong row. Adding cancels it.
+    -- or a removal armed before it would land on the wrong row. Adding cancels
+    -- both.
     selectedBookmarkId = nil
+    disarmRemoval()
     if bookmarks_dialog['text_input'] then
         local label = trimLabel(bookmarks_dialog['text_input']:get_text())
         if string.len(label) > 0 then
@@ -657,6 +688,7 @@ end
 -- bookmark the user did not open.
 function confirmRename()
     dlt_footer()
+    disarmRemoval()
     if not (bookmarks_dialog['text_input'] and bookmarks_dialog['bookmarks_list']) then
         return
     end
@@ -685,6 +717,7 @@ end
 
 function goToBookmark()
     dlt_footer()
+    disarmRemoval()
     if bookmarks_dialog['bookmarks_list'] then
         local selection = bookmarks_dialog['bookmarks_list']:get_selection()
         selectedBookmarkId = nil
@@ -705,6 +738,7 @@ end
 
 function editBookmark()
     dlt_footer()
+    disarmRemoval()
     if bookmarks_dialog['bookmarks_list'] then
         local selection = bookmarks_dialog['bookmarks_list']:get_selection()
         selectedBookmarkId = nil
@@ -725,32 +759,74 @@ function editBookmark()
     end
 end
 
+-- // Arm a removal. This writes nothing: it records which rows are selected and
+-- says so in the footer. confirmRemoval(), on the Delete button, does the
+-- deleting. Two clicks on two different buttons, so a stray double-click on one
+-- of them cannot delete a bookmark.
 function removeBookmark()
     dlt_footer()
-    if bookmarks_dialog['bookmarks_list'] then
-        local selection = bookmarks_dialog['bookmarks_list']:get_selection()
-        selectedBookmarkId = nil
-        if next(selection) then
-            local count = 0
-            -- sort selection by ids
-            local selectionSorted = {}
-            for id in pairs(selection) do
-                table.insert(selectionSorted, id)
-            end
-            table.sort(selectionSorted)
+    if not bookmarks_dialog['bookmarks_list'] then
+        return
+    end
+    local selection = bookmarks_dialog['bookmarks_list']:get_selection()
+    if not next(selection) then
+        pendingRemoval = nil
+        setFooter("Please select items you want remove")
+        return
+    end
+    -- Sorted here rather than at commit time: the offset arithmetic in
+    -- confirmRemoval() is only correct while the ids ascend.
+    local ids = {}
+    for id in pairs(selection) do
+        table.insert(ids, id)
+    end
+    table.sort(ids)
+    pendingRemoval = ids
+    if #ids == 1 then
+        setFooter(MSG_REMOVE_PENDING_ONE)
+    else
+        setFooter(string.format(MSG_REMOVE_PENDING_MANY, #ids))
+    end
+end
 
-            -- ipairs, not pairs: the idx - count offset below is only
-            -- correct while the sorted selection is walked in order
-            for _, idx in ipairs(selectionSorted) do
-                table.remove(Bookmarks, idx - count)
-                count = count + 1
-            end
-            saveBookmarks()
-            showBookmarks()
-        else
-            bookmarks_dialog['footer_message']:set_text(setMessageStyle("Please select items you want remove"))
+-- // Commit a removal armed by removeBookmark(), from the Delete button.
+-- Refuses unless the selection is still exactly the armed rows, so a bookmark
+-- selected after arming can never be the one that gets deleted. The refusal
+-- keeps the arming, so reselecting and clicking Delete again works.
+function confirmRemoval()
+    dlt_footer()
+    if not bookmarks_dialog['bookmarks_list'] then
+        return
+    end
+    if not pendingRemoval then
+        setFooter(MSG_REMOVE_NOT_PENDING)
+        return
+    end
+    local selection = bookmarks_dialog['bookmarks_list']:get_selection()
+    if not selection or table_length(selection) ~= #pendingRemoval then
+        setFooter(MSG_REMOVE_SELECTION_CHANGED)
+        return
+    end
+    for _, id in ipairs(pendingRemoval) do
+        if not selection[id] then
+            setFooter(MSG_REMOVE_SELECTION_CHANGED)
+            return
         end
     end
+
+    -- A deletion shifts every index after it, so a rename loaded before it
+    -- would commit to the wrong row.
+    selectedBookmarkId = nil
+    local count = 0
+    -- ipairs, not pairs: the idx - count offset below is only correct while
+    -- the sorted ids are walked in order
+    for _, idx in ipairs(pendingRemoval) do
+        table.remove(Bookmarks, idx - count)
+        count = count + 1
+    end
+    pendingRemoval = nil
+    saveBookmarks()
+    showBookmarks()
 end
 -- Quote a path for the shell: single quotes, with any embedded one escaped
 function shellQuote(path)
@@ -770,6 +846,7 @@ end
 -- first bookmark is saved, so fall back to the folder the file will live in.
 function showInFinder()
     dlt_footer()
+    disarmRemoval()
     local command
     if bookmarkFilePath and fileExists(bookmarkFilePath) then
         command = FINDER_REVEAL_CMD .. shellQuote(bookmarkFilePath)

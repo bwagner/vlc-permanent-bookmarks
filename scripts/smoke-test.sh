@@ -35,6 +35,12 @@ readonly DIALOG_TITLE="VLC Permanent Bookmarks"
 # other answers a click. Sharing one made a refusal invisible.
 readonly MSG_NO_MEDIA="No media playing"
 readonly MSG_ADD_NO_MEDIA="Nothing to bookmark - no media is playing"
+# Remove is two-step: Remove arms and names the count, Delete commits. Only the
+# single-bookmark wording is reachable here - the accessibility API cannot build
+# a multi-row selection.
+readonly MSG_REMOVE_PENDING_ONE="Removing 1 bookmark - click Delete to commit"
+readonly MSG_REMOVE_NOT_PENDING="Click Remove first to choose what to delete"
+readonly MSG_REMOVE_SELECTION_CHANGED="Selection changed - reselect to delete"
 
 # Fixture: 5 minutes of testsrc. The keyframe interval equals the frame rate, so
 # there is a keyframe every second and seeks land exactly on the second asked
@@ -322,6 +328,13 @@ dialog_select_row() {
     sleep "$UI_SETTLE_S"
 }
 
+# Remove arms, Delete commits. Steps that only need a row gone use this, so the
+# two-step is exercised at every call site instead of only in test_remove().
+dialog_remove_selected() {
+    dialog_click "Remove"
+    dialog_click "Delete"
+}
+
 # dialog_has_button <name> - existence only. Show in Finder is deliberately
 # never clicked here: it launches Finder, which steals focus mid-run and would
 # be read as hardware input by the hands-off monitor.
@@ -334,6 +347,13 @@ dialog_has_button() {
 # against three different messages on VLC 3.0.23.
 dialog_footer() {
     osa_retry "$(in_dialog "return value of static text 1")"
+}
+
+# How many rows are selected. The dialog API has no deselect call, so the only
+# way to clear a selection is rebuilding the list - this is what says whether
+# that works.
+dialog_selected_rows() {
+    osa_retry "$(in_dialog "return count of (rows of table 1 of scroll area 1 whose selected is true)")"
 }
 
 dialog_row_count() {
@@ -636,13 +656,84 @@ test_go() {
     check "go: playback jumps to the selected bookmark" "$T_ALPHA" "$(vlc_current_time)"
 }
 
+# Remove arms and Delete commits, so a deletion takes two deliberate clicks on
+# two different buttons - a double-click on one button cannot arm and commit.
+# The refusals carry the weight here: an armed removal that committed against a
+# row the user had reselected would delete the wrong bookmark silently.
 test_remove() {
+    local before
+    before="$(bookmarks_count)"
+
+    check "remove: the Delete button exists" "true" "$(dialog_has_button "Delete")"
+
     dialog_select_row 2
+    dialog_click "Delete"
+    check "remove: Delete alone deletes nothing" "$before" "$(bookmarks_count)"
+    check "remove: Delete alone says what is missing" "$MSG_REMOVE_NOT_PENDING" "$(dialog_footer)"
+
     dialog_click "Remove"
+    check "remove: Remove alone deletes nothing" "$before" "$(bookmarks_count)"
+    check "remove: Remove announces the armed count" "$MSG_REMOVE_PENDING_ONE" "$(dialog_footer)"
+
+    # Selection moved off the armed row: refused, and the arming is kept so the
+    # user can reselect rather than start over.
+    dialog_select_row 1
+    dialog_click "Delete"
+    check "remove: Delete refuses when the selection moved" "$before" "$(bookmarks_count)"
+    check "remove: the refusal asks for a reselect" "$MSG_REMOVE_SELECTION_CHANGED" "$(dialog_footer)"
+
+    dialog_select_row 2
+    dialog_click "Delete"
     check "remove: the selected bookmark is deleted" "gamma-renamed,beta" "$(bookmarks_labels)"
     check "remove: two bookmarks remain" "2" "$(bookmarks_count)"
     check "remove: the list matches the saved file" "2" "$(dialog_row_count)"
     check "remove: surviving times are intact" "$((T_BETA * MICROS_PER_SECOND))" "$(bookmarks_field 2 2)"
+    # Known open: the dialog API has no deselect call, and a rebuilt list keeps
+    # its selected row, so a committed removal leaves the row under it selected.
+    # Measured, not assumed - this read 1. Promote to check if VLC ever changes.
+    xcheck "remove: the committed removal leaves nothing selected" "0" "$(dialog_selected_rows)"
+}
+
+# An insert shifts every index after it, so an armed removal cannot survive an
+# Add - committing it afterwards would delete against stale indices.
+test_remove_guards() {
+    local before
+    before="$(bookmarks_count)"
+
+    dialog_select_row 1
+    dialog_click "Remove"
+    vlc_seek "$T_ELSEWHERE"
+    dialog_set_input "added-not-removed"
+    dialog_click "Add"
+    check "guard: Add after Remove adds instead of removing" "$((before + 1))" "$(bookmarks_count)"
+
+    dialog_click "Delete"
+    check "guard: the armed removal did not survive the Add" "$((before + 1))" "$(bookmarks_count)"
+    check "guard: Delete says the arming is gone" "$MSG_REMOVE_NOT_PENDING" "$(dialog_footer)"
+
+    dialog_select_row 3
+    dialog_remove_selected
+    check "guard: cleanup left two bookmarks" "$before" "$(bookmarks_count)"
+
+    # Any other button exits the remove cycle. The footer is cleared by every
+    # callback anyway, so without this the arming would go on living invisibly
+    # and a later Delete would commit it.
+    dialog_select_row 1
+    dialog_click "Remove"
+    dialog_click "Go"
+    dialog_click "Delete"
+    check "guard: Go cancels an armed removal" "$before" "$(bookmarks_count)"
+    check "guard: Delete after Go says the arming is gone" "$MSG_REMOVE_NOT_PENDING" "$(dialog_footer)"
+
+    # Rename disarms too, but keeps the selection: confirmRename() refuses
+    # unless the loaded row is still the selected one.
+    dialog_select_row 1
+    dialog_click "Remove"
+    dialog_click "Rename"
+    check "guard: Rename keeps its row selected" "1" "$(dialog_selected_rows)"
+    dialog_click "Delete"
+    check "guard: Rename cancels an armed removal" "$before" "$(bookmarks_count)"
+    check "guard: Delete after Rename says the arming is gone" "$MSG_REMOVE_NOT_PENDING" "$(dialog_footer)"
 }
 
 test_default_label_index() {
@@ -654,7 +745,7 @@ test_default_label_index() {
     check "default label: derived from the last bookmark's (N) suffix" "Bookmark (8)" "$(dialog_get_input)"
 
     dialog_select_row 3
-    dialog_click "Remove"
+    dialog_remove_selected
     check "default label: cleanup left two bookmarks" "2" "$(bookmarks_count)"
 }
 
@@ -672,7 +763,7 @@ test_label_whitespace() {
     check "a padded label is stored trimmed" "padded" "$(bookmarks_field 3 4)"
 
     dialog_select_row 3
-    dialog_click "Remove"
+    dialog_remove_selected
     check "trim: cleanup left two bookmarks" "$before" "$(bookmarks_count)"
 }
 
@@ -692,7 +783,7 @@ test_rename_guards() {
     check "guard: the loaded bookmark keeps its label" "gamma-renamed" "$(bookmarks_field 1 4)"
 
     dialog_select_row 3
-    dialog_click "Remove"
+    dialog_remove_selected
     check "guard: cleanup left two bookmarks" "$before" "$(bookmarks_count)"
 
     # Loaded from row 1, committed with row 2 selected: refused, nothing written.
@@ -798,7 +889,7 @@ main() {
 
     local phase
     for phase in test_fresh_medium test_add test_add_ordering test_rename \
-                 test_go test_remove test_default_label_index \
+                 test_go test_remove test_remove_guards test_default_label_index \
                  test_label_whitespace test_rename_guards test_track_change \
                  test_playback_stopped test_no_lua_errors; do
         "$phase"

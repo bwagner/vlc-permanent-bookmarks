@@ -129,6 +129,19 @@ the old bookmarks behind a new file.
   instead of reading a position that does not exist. Rebuilding the window instead would
   have been two lines, but it would drop the dialog back at its default
   position, raise it over the video and replay the open-flicker on every track.
+- **Remove asks before it deletes.** Upstream deletes the selected bookmarks the
+  instant Remove is clicked, with no confirmation and no undo, and it can take
+  several at once. **Remove** now only arms: it names what is about to go in the
+  footer and writes nothing. **Delete** - directly under Remove, the way Confirm
+  sits under Rename - commits it. The two steps are on two different buttons on
+  purpose, since a habitual double-click on a single one would arm and commit in
+  one gesture. Like a pending rename, an armed removal is refused if the
+  selection has moved, and **every other button cancels it** - each callback
+  clears the footer first, so an arming that outlived its own message would sit
+  there invisibly waiting for a Delete. What cannot be done is clearing the
+  list selection along with it: the dialog API has no deselect call, and a list
+  rebuilt with `clear()` plus `add_value()` keeps its selected row. That is the
+  suite's one XFAIL.
 - **"Show in Finder" button.** Reveals this medium's bookmark file in Finder.
   Nothing is written until the first bookmark is saved, so on a medium with no
   bookmarks yet it opens the folder the file will live in and says so in the
@@ -144,8 +157,8 @@ catches style problems but has never found a bug in this file.
 
 The script generates two test videos with ffmpeg, launches VLC on both as a
 playlist, opens the extension, and drives the dialog through the macOS
-accessibility API - add, sort order, rename, go, remove, then a track change and
-a stop - asserting after each step against the bookmark file the extension
+accessibility API - add, sort order, rename, go, the two-step remove, then a
+track change and a stop - asserting after each step against the bookmark file the extension
 actually wrote, which `jq` reads back - so a malformed file fails the run rather
 than being quietly tolerated. The second video exists only so the playlist has
 somewhere to advance to; nothing touches it until the track-change phase.
