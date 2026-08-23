@@ -29,6 +29,7 @@ JSON, named `<hash>.json`.
 
     {
       "version":1,
+      "filename":"Big Buck Bunny.mp4",
       "bookmarks":[
         {
           "time":86205080,
@@ -40,6 +41,15 @@ JSON, named `<hash>.json`.
 
 `time` is the playback position in microseconds and is what the extension seeks
 to; `formattedTime` is derived from it and only ever displayed.
+
+`filename` is meta-information: the hash remains the only key, and nothing
+reads the field back. It names the medium the bookmarks belong to, which the
+hash alone cannot tell you. Only the file name is stored, never the path, since
+these files travel with the media. It is rewritten on every save, so renaming a
+medium corrects it the next time a bookmark is touched, and it is left out
+entirely for anything with no local file name, such as a network stream. Files
+written before the field existed are still read normally and gain it on their
+next save.
 
 ### Bookmarks written by an older version
 

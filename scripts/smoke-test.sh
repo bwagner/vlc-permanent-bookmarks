@@ -338,6 +338,13 @@ bookmarks_field() { bookmarks_dump | sed -n "${1}p" | cut -f"$2"; }
 
 bookmarks_labels() { bookmarks_dump | cut -f4 | paste -sd, - ; }
 
+# The medium's file name, recorded as meta-information. Empty when the field is
+# absent, which is what an extension that stopped writing it would produce.
+bookmarks_filename() {
+    [ -e "$BOOKMARK_FILE" ] || return 0
+    jq -r '.filename // ""' "$BOOKMARK_FILE"
+}
+
 # --- Setup and teardown ----------------------------------------------------
 
 WORK_DIR=""
@@ -521,6 +528,7 @@ test_add() {
     check "add: bookmark file is created" "present" \
         "$([ -e "$BOOKMARK_FILE" ] && echo present || echo absent)"
     check "add: one bookmark is saved" "1" "$(bookmarks_count)"
+    check "add: the medium's file name is recorded" "$FIXTURE_NAME" "$(bookmarks_filename)"
     check "add: the label is saved" "alpha" "$(bookmarks_field 1 4)"
     check_near "add: the playback time is saved" "$((T_ALPHA * MICROS_PER_SECOND))" "$(bookmarks_field 1 2)"
     check "add: the list shows one row" "1" "$(dialog_row_count)"

@@ -18,7 +18,7 @@ local JSON_MODULE = "dkjson"
 local BOOKMARK_FILE_EXT = ".json"
 local BOOKMARK_FORMAT_VERSION = 1
 -- Fixed key order, so a rewritten file diffs cleanly against the previous one.
-local JSON_KEY_ORDER = {"version", "bookmarks", "time", "formattedTime", "label"}
+local JSON_KEY_ORDER = {"version", "filename", "bookmarks", "time", "formattedTime", "label"}
 local JSON_INDENT = true
 local json = nil
 -- Set when a file exists on disk but could not be trusted. Blocks saving, so a
@@ -128,6 +128,7 @@ function load_bookmarks()
         else
             mediaFile.dir, mediaFile.name = string.match(filePath,
                 "^(.*[" .. slash .. "])([^" .. slash .. "]-).?[%a%d]*$")
+            mediaFile.baseName = getBaseName(filePath)
         end
         if not mediaFile.name then
             mediaFile.name = filePath
@@ -146,6 +147,17 @@ function load_bookmarks()
         end
     end
     collectgarbage()
+end
+
+-- // The medium's file name with its extension. mediaFile.name cannot serve
+-- here: the pattern above yields the stem, dropping the extension. Returns nil
+-- when there is no name to take, and the bookmark file then carries no
+-- filename field at all rather than a placeholder.
+function getBaseName(filePath)
+    if type(filePath) ~= "string" then
+        return nil
+    end
+    return string.match(filePath, "([^" .. slash .. "]+)$")
 end
 
 function getFileHash()
@@ -383,7 +395,7 @@ function saveBookmarks()
         setFooter(pendingFooterMessage or MSG_SAVE_BLOCKED)
         return false
     end
-    local err = saveBookmarksFile(Bookmarks, bookmarkFilePath)
+    local err = saveBookmarksFile(Bookmarks, bookmarkFilePath, mediaFile.baseName)
     if not err then
         return true
     end
@@ -394,12 +406,16 @@ end
 
 -- // The Save Function. Encodes once and writes once, so a failing disk has a
 -- single point to report, and both write() and close() are checked.
-function saveBookmarksFile(bookmarks, filePath)
+-- fileName is meta-information only - the hash stays the sole key and nothing
+-- reads the field back - so a nil simply leaves it out of the constructor, and
+-- out of the file.
+function saveBookmarksFile(bookmarks, filePath, fileName)
     if not json then
         return "the " .. JSON_MODULE .. " module is missing"
     end
     local payload = {
         version = BOOKMARK_FORMAT_VERSION,
+        filename = fileName,
         bookmarks = bookmarks
     }
     local ok, encoded = pcall(json.encode, payload, {
