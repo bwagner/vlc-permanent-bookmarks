@@ -155,26 +155,45 @@ catches style problems but has never found a bug in this file.
 
     ./scripts/smoke-test.sh
 
-The script generates two test videos with ffmpeg, launches VLC on both as a
-playlist, opens the extension, and drives the dialog through the macOS
+The script generates three test videos with ffmpeg, launches VLC on all three as
+a playlist, opens the extension, and drives the dialog through the macOS
 accessibility API - add, sort order, rename, go, the two-step remove, then a
-track change and a stop - asserting after each step against the bookmark file the extension
+track change, an old-format bookmark file, a stop, and a reopen with nothing
+playing - asserting after each step against the bookmark file the extension
 actually wrote, which `jq` reads back - so a malformed file fails the run rather
-than being quietly tolerated. The second video exists only so the playlist has
-somewhere to advance to; nothing touches it until the track-change phase.
+than being quietly tolerated. The second and third videos exist so the playlist
+has somewhere to advance to; nothing touches them until the track-change and
+legacy phases respectively.
 
-Requirements: macOS, VLC 3.x, `ffmpeg`, `jq`, and Accessibility permission for
-the terminal application you run it from (System Settings > Privacy & Security >
-Accessibility). It drives the real GUI and takes over the screen for about a
-minute; it cannot run headless or over ssh.
+Two states cannot be reached by driving the dialog, so the harness arranges them
+directly. The **old-format** path needs a legacy bookmark file with no `.json`
+beside it, which the extension itself will never produce - it only writes JSON.
+So one is planted before VLC starts, at the hash `scripts/media_hash.py`
+computes for the third video, and the run asserts that hash against the one the
+extension logs: `media_hash.py` is a port of `getFileHash()`, and nothing else
+keeps the two in step. The **no-medium** path needs the extension activated with
+nothing loaded, so the last phase closes the dialog after the stop and reopens
+it from there, then starts a medium again to check the placeholder dialog is
+replaced by the real one.
+
+The legacy phase makes the extension log a warning and a refusal, both correct.
+Those two lines are excluded from the "no Lua errors" check by their exact text,
+so nothing else hides behind them.
+
+Requirements: macOS, VLC 3.x, `ffmpeg`, `jq`, `python3` (for `media_hash.py`),
+and Accessibility permission for the terminal application you run it from
+(System Settings > Privacy & Security > Accessibility). It drives the real GUI
+and takes over the screen for about two minutes - 91 seconds of it driving VLC,
+measured - and it cannot run headless or over ssh.
 
 It refuses to start if VLC is already running, because it controls VLC's
 lifecycle. It touches exactly one bookmark file per fixture - keyed by that
-fixture's hash, read from VLC's own debug log - and deletes both afterwards. No
-other file in the bookmarks directory is opened. If a file already exists at
-either path it aborts without touching it: a path is handed to the cleanup trap
-only after that check has passed, so a run can only ever delete a file it
-created itself.
+fixture's hash, read from VLC's own debug log - plus the legacy file it plants
+at the third fixture's hash, and deletes all of them afterwards. No other file
+in the bookmarks directory is opened. If a file already exists at any of those
+paths it aborts without touching it: a path is handed to the cleanup trap only
+after that check has passed, so a run can only ever delete a file it created
+itself.
 
 ### Leave the machine alone while the test runs
 
@@ -189,7 +208,7 @@ since the last real hardware input, and the accessibility actions the harness
 dispatches do not reset it - verified by sampling a complete run 110 times
 across menu clicks, button presses, text-field writes and seeks, with zero
 resets. The counter therefore only falls when a human touches the machine, and
-it is read once at the end of each of the nine test phases.
+it is read once at the end of every test phase.
 
 Detected input prints an `INPUT` line naming the phase and adds a notice to the
 summary. It does not abort the run and does not change the exit code, which
@@ -213,7 +232,8 @@ a second. It is the only test here that could run in CI or a commit hook.
 
 Known-open bugs can be carried as `XFAIL` tests: they are expected to fail, do
 not fail the run, and turn into an `XPASS` prompting promotion once fixed. There
-are none at present.
+is one: the list selection cannot be cleared after a committed removal, as
+described under the Remove button above.
 
 Not covered: multi-item selection. The accessibility API replaces the list
 selection rather than extending it, so the multi-select branches of

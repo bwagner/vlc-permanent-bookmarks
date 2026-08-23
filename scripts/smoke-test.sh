@@ -41,6 +41,10 @@ readonly MSG_ADD_NO_MEDIA="Nothing to bookmark - no media is playing"
 readonly MSG_REMOVE_PENDING_ONE="Removing 1 bookmark - click Delete to commit"
 readonly MSG_REMOVE_NOT_PENDING="Click Remove first to choose what to delete"
 readonly MSG_REMOVE_SELECTION_CHANGED="Selection changed - reselect to delete"
+# Shown when a medium has an old-format bookmark file and no JSON beside it.
+# The extension will not save over it, so the medium is read-only until the
+# migration script runs.
+readonly MSG_LEGACY_FOUND="Bookmarks are in the old format - run the migration script"
 
 # Fixture: 5 minutes of testsrc. The keyframe interval equals the frame rate, so
 # there is a keyframe every second and seeks land exactly on the second asked
@@ -51,6 +55,11 @@ readonly FIXTURE_DURATION_S=300
 # different bytes and a different size, so it hashes to its own bookmark file.
 readonly FIXTURE2_NAME="smoke-fixture-2.mp4"
 readonly FIXTURE2_DURATION_S=180
+# A third medium, played only by the legacy read-only test. An old-format
+# bookmark file is planted at its hash before VLC starts, so it is the one
+# fixture whose bookmark file exists before the extension ever sees it.
+readonly FIXTURE3_NAME="smoke-fixture-3.mp4"
+readonly FIXTURE3_DURATION_S=240
 readonly FIXTURE_RESOLUTION="320x240"
 readonly FIXTURE_FPS=10
 readonly FIXTURE_KEYFRAME_FRAMES=10
@@ -87,6 +96,22 @@ readonly AX_RETRY_DELAY_S=0.4
 # being used, which leaves a blind spot over the first phase.
 readonly NANOS_PER_SECOND=1000000000
 readonly IDLE_AT_START_WARN_S=3
+
+# The legacy file has to be planted before VLC starts, which means knowing the
+# fixture's hash before the extension logs it. This is the repo's port of
+# getFileHash(); the run also asserts the two agree, so a drift between them
+# fails here instead of silently misleading whoever reaches for the script.
+readonly MEDIA_HASH_SCRIPT="$REPO_DIR/scripts/media_hash.py"
+# Run through python3 rather than the script's uv shebang: it declares no
+# dependencies, so uv would only be another thing to have installed.
+readonly PYTHON="python3"
+# Two diagnostics the legacy phase provokes on purpose: the extension is right
+# to warn that an old-format file is there, and right to log a refusal when the
+# Add tries to save over it. Both are excluded by their exact text rather than
+# by loosening the pattern, so nothing else that looks like Lua trouble hides
+# behind them. Both name the planted file - see plant_legacy_bookmark_file().
+readonly EXPECTED_LOG_LEGACY_WARNING="Old-format bookmark file found:"
+readonly EXPECTED_LOG_LEGACY_REFUSAL="Refusing to save over bookmarks that were not read:"
 
 # --- Test bookkeeping ------------------------------------------------------
 
@@ -268,6 +293,14 @@ vlc_stop() {
     sleep "$ACTION_SETTLE_S"
 }
 
+# vlc_open <path> - load and play a medium by name. Used where "play" would be
+# ambiguous: after a stop it is not defined which playlist entry resumes, and
+# the no-input test needs to know exactly which medium comes back.
+vlc_open() {
+    osa -e "tell application \"$VLC_APP_NAME\" to open POSIX file \"$1\"" >/dev/null
+    sleep "$ACTION_SETTLE_S"
+}
+
 extension_menu_ready() {
     osa -e "tell application \"System Events\" to tell process \"$VLC_APP_NAME\" to return exists menu item \"$DIALOG_TITLE\" of menu 1 of menu item \"Extensions\" of menu 1 of menu bar item \"$VLC_APP_NAME\" of menu bar 1" 2>/dev/null || echo "false"
 }
@@ -342,6 +375,13 @@ dialog_has_button() {
     osa_retry "$(in_dialog "return exists button \"$1\"")"
 }
 
+# The label input. The no-input dialog is a single label with no widgets, so
+# this is what separates it from the real one - the same test the extension
+# itself uses in reloadCurrentMedium().
+dialog_has_text_field() {
+    osa_retry "$(in_dialog "return exists text field 1")"
+}
+
 # The footer label. "static text 1" is the footer and not the window title,
 # which reads back as "static text \"VLC Permanent Bookmarks\"" - verified
 # against three different messages on VLC 3.0.23.
@@ -408,6 +448,15 @@ BOOKMARK_FILE=""
 # Every bookmark file this run claimed, all removed by cleanup(). A run touches
 # one per medium it plays.
 BOOKMARK_FILES=()
+# Files this run wrote into the bookmarks directory itself rather than through
+# the extension: the planted old-format file, and the JSON path beside it that
+# must stay absent. Both are removed by cleanup(), the second so a regression
+# that does write it leaves nothing behind.
+PLANTED_FILES=()
+FIXTURE3_HASH=""
+LEGACY_FILE=""
+LEGACY_JSON_FILE=""
+LEGACY_MD5=""
 
 cleanup() {
     local status=$?
@@ -426,6 +475,8 @@ cleanup() {
     # Only ever the fixtures' own bookmark files.
     local claimed
     for claimed in ${BOOKMARK_FILES[@]+"${BOOKMARK_FILES[@]}"}; do rm -f "$claimed"; done
+    local planted
+    for planted in ${PLANTED_FILES[@]+"${PLANTED_FILES[@]}"}; do rm -f "$planted"; done
     if [ -n "$WORK_DIR" ] && [ -d "$WORK_DIR" ]; then
         if [ "$status" -eq 0 ] && [ "$failure_seen" -eq 0 ]; then
             rm -rf "$WORK_DIR"
@@ -443,11 +494,12 @@ preflight() {
     info "=== Preflight ==="
 
     local missing=""
-    for cmd in ffmpeg jq osascript; do
+    for cmd in ffmpeg jq osascript md5 "$PYTHON"; do
         command -v "$cmd" >/dev/null 2>&1 || missing="$missing $cmd"
     done
     if [ -n "$missing" ]; then abort "missing required command(s):$missing"; fi
     [ -d "$VLC_APP_BUNDLE" ] || abort "VLC not found at $VLC_APP_BUNDLE"
+    [ -f "$MEDIA_HASH_SCRIPT" ] || abort "media_hash.py not found at $MEDIA_HASH_SCRIPT"
 
     osa -e 'tell application "System Events" to return name of first process whose frontmost is true' >/dev/null 2>&1 \
         || abort "System Events is not scriptable. Grant Accessibility permission to this terminal application in System Settings > Privacy & Security > Accessibility."
@@ -483,9 +535,59 @@ make_fixture() {
     WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/vlc-bookmarks-smoke.XXXXXX")"
     FIXTURE="$WORK_DIR/$FIXTURE_NAME"
     FIXTURE2="$WORK_DIR/$FIXTURE2_NAME"
+    FIXTURE3="$WORK_DIR/$FIXTURE3_NAME"
     LOG_FILE="$WORK_DIR/vlc.log"
     generate_fixture "$FIXTURE" "$FIXTURE_DURATION_S"
     generate_fixture "$FIXTURE2" "$FIXTURE2_DURATION_S"
+    generate_fixture "$FIXTURE3" "$FIXTURE3_DURATION_S"
+}
+
+# The extension only ever writes JSON, so the state the legacy path needs - an
+# old-format file with no JSON beside it - cannot be reached by driving the
+# dialog. It is planted here instead, before VLC starts, at the hash the third
+# fixture will produce. The content is a real old-format chunk, though the
+# extension never parses it: it checks the file exists and refuses to save.
+plant_legacy_bookmark_file() {
+    info ""
+    info "=== Legacy fixture ==="
+    FIXTURE3_HASH="$("$PYTHON" "$MEDIA_HASH_SCRIPT" -q "$FIXTURE3")" \
+        || abort "media_hash.py could not hash $FIXTURE3"
+    [ -n "$FIXTURE3_HASH" ] || abort "media_hash.py printed no hash for $FIXTURE3"
+
+    LEGACY_FILE="$BOOKMARKS_DIR/$FIXTURE3_HASH"
+    LEGACY_JSON_FILE="$BOOKMARKS_DIR/$FIXTURE3_HASH$BOOKMARK_FILE_EXT"
+    info "Legacy fixture hash: $FIXTURE3_HASH"
+    info "Planting: $LEGACY_FILE"
+
+    # The same refusal claim_bookmark_file() makes, for both names this time.
+    # A pre-existing file at either path is somebody's data, and the run would
+    # both misread it and delete it on the way out.
+    if [ -e "$LEGACY_FILE" ]; then
+        abort "a bookmark file already exists at $LEGACY_FILE. Refusing to overwrite pre-existing data"
+    elif [ -e "$LEGACY_JSON_FILE" ]; then
+        abort "a bookmark file already exists at $LEGACY_JSON_FILE. Refusing to overwrite pre-existing data"
+    fi
+
+    mkdir -p "$BOOKMARKS_DIR"
+    cat > "$LEGACY_FILE" <<'LEGACY'
+return {
+-- Table: {1}
+{
+   {2},
+},
+-- Table: {2}
+{
+   ["formattedTime"]="00:01:00.000",
+   ["time"]=60000000,
+   ["label"]="planted by the smoke test",
+},
+}
+LEGACY
+    # Registered only after the guard passed, for the reason claim_bookmark_file
+    # gives: the EXIT trap deletes everything on this list, including on an
+    # abort that refused to touch the file.
+    PLANTED_FILES+=("$LEGACY_FILE" "$LEGACY_JSON_FILE")
+    LEGACY_MD5="$(md5 -q "$LEGACY_FILE")"
 }
 
 launch_vlc() {
@@ -497,9 +599,10 @@ launch_vlc() {
     # one playing the fixture and writing the log, another owning the menu bar
     # and the extension dialog. Every AppleScript below would then address the
     # wrong one.
-    # Both fixtures, so the playlist has somewhere to advance to. VLC plays the
-    # first; nothing reaches the second until the track-change test asks for it.
-    open -a "$VLC_APP_BUNDLE" --args -vv --file-logging --logfile="$LOG_FILE" "$FIXTURE" "$FIXTURE2" \
+    # All three fixtures, so the playlist has somewhere to advance to. VLC plays
+    # the first; nothing reaches the second until the track-change test asks for
+    # it, nor the third until the legacy test does.
+    open -a "$VLC_APP_BUNDLE" --args -vv --file-logging --logfile="$LOG_FILE" "$FIXTURE" "$FIXTURE2" "$FIXTURE3" \
         || abort "failed to launch $VLC_APP_BUNDLE"
 
     local tries=0
@@ -852,6 +955,60 @@ test_track_change() {
         "$(jq -r '.bookmarks | length' "$previous_file")"
 }
 
+# A medium whose bookmarks are still in the old format. The extension will not
+# read that file - reading it would mean executing it, since the format is a
+# Lua chunk - and it will not save over it either, because a new JSON file
+# beside it would strand the old bookmarks behind it. So the medium is
+# read-only and the footer says why.
+test_legacy_readonly() {
+    local previous_hash tries=0
+    previous_hash="$(latest_logged_hash)"
+
+    vlc_next
+
+    while [ "$tries" -lt "$LAUNCH_TIMEOUT_TRIES" ]; do
+        [ "$(latest_logged_hash)" != "$previous_hash" ] && break
+        sleep "$LAUNCH_POLL_S"
+        tries=$((tries + 1))
+    done
+
+    # media_hash.py is a port of getFileHash(), and the planted file is only at
+    # the right path if the two agree. Nothing else in the repo enforces that,
+    # and a drift would otherwise show up as a confusing failure in whichever
+    # tool was reached for later.
+    local hash
+    hash="$(latest_logged_hash)"
+    if [ "$hash" != "$FIXTURE3_HASH" ]; then
+        report_fail "legacy: media_hash.py agrees with the extension's getFileHash()" \
+            "$FIXTURE3_HASH" "$hash"
+        info "  The planted file is not at the hash the extension looked for, so"
+        info "  the rest of this phase would test nothing. Skipping it."
+        return
+    fi
+    report_pass "legacy: media_hash.py agrees with the extension's getFileHash()"
+
+    check "legacy: the footer says the file is in the old format" \
+        "$MSG_LEGACY_FOUND" "$(dialog_footer)"
+    check "legacy: the old bookmarks are not listed" "0" "$(dialog_row_count)"
+
+    vlc_pause
+    vlc_seek "$T_GAMMA"
+    dialog_set_input "must not be saved"
+    dialog_click "Add"
+
+    check "legacy: Add writes no JSON file beside the old one" "absent" \
+        "$([ -e "$LEGACY_JSON_FILE" ] && echo present || echo absent)"
+    check "legacy: the old-format file is left byte-identical" \
+        "$LEGACY_MD5" "$(md5 -q "$LEGACY_FILE")"
+    check "legacy: the refusal is on the footer" "$MSG_LEGACY_FOUND" "$(dialog_footer)"
+    # Documented, not endorsed: addBookmark() inserts into the in-memory list
+    # and only then finds out that saveBookmarks() refuses, so the row appears
+    # even though nothing reached the disk. The footer says so and the next
+    # load drops it. Pinned here so a change to that ordering is deliberate.
+    check "legacy: a refused Add still shows its row (nothing was saved)" "1" \
+        "$(dialog_row_count)"
+}
+
 # Stopping playback leaves the dialog up with nothing loaded. Add has no
 # position to read there and cannot be greyed out, so it must refuse.
 test_playback_stopped() {
@@ -869,12 +1026,89 @@ test_playback_stopped() {
     check "stop: Add answers the click with its own message" "$MSG_ADD_NO_MEDIA" "$(dialog_footer)"
 }
 
+# Activating the extension with nothing playing builds a placeholder dialog
+# with none of the real widgets, and reloadCurrentMedium() detects it by that
+# absence and rebuilds when a medium starts. Neither branch is reachable while
+# a fixture is playing, so this phase closes the dialog and reopens it from the
+# stopped state test_playback_stopped left behind.
+test_noinput_dialog() {
+    dialog_click "Close"
+    local tries=0
+    while [ "$tries" -lt "$DIALOG_WAIT_TRIES" ]; do
+        [ "$(dialog_exists)" = "false" ] && break
+        sleep "$LAUNCH_POLL_S"
+        tries=$((tries + 1))
+    done
+    check "no medium: Close deactivates the extension" "false" "$(dialog_exists)"
+
+    click_extension_menu
+    tries=0
+    while [ "$tries" -lt "$DIALOG_WAIT_TRIES" ]; do
+        [ "$(dialog_exists)" = "true" ] && break
+        sleep "$LAUNCH_POLL_S"
+        tries=$((tries + 1))
+    done
+
+    if [ "$(dialog_exists)" != "true" ]; then
+        # It does appear, measured on VLC 3.0.23 - the Cocoa provider shows a
+        # dialog once a widget is added to it. Worth knowing if this ever goes
+        # red: noinput_dialog() is the one path that never calls
+        # dialog_UI:show() (the line is commented out upstream, where
+        # main_dialog() calls it), so the extension would look dead to anyone
+        # who activates it before opening a file.
+        report_fail "no medium: activating with nothing playing shows a dialog" "true" "false"
+        info "  noinput_dialog() does not call dialog_UI:show() - see the commented-out line."
+    else
+        report_pass "no medium: activating with nothing playing shows a dialog"
+        check "no medium: the placeholder dialog has no Add button" "false" \
+            "$(dialog_has_button "Add")"
+        check "no medium: the placeholder dialog has no label input" "false" \
+            "$(dialog_has_text_field)"
+    fi
+
+    # The third fixture rather than a bare play: after a stop it is undefined
+    # which playlist entry resumes, and this needs a medium whose bookmark
+    # count is known. That one has none - its bookmarks are the planted
+    # old-format file, which the extension refuses to read.
+    vlc_open "$FIXTURE3"
+    tries=0
+    while [ "$tries" -lt "$LAUNCH_TIMEOUT_TRIES" ]; do
+        [ "$(dialog_has_button "Add")" = "true" ] && break
+        sleep "$LAUNCH_POLL_S"
+        tries=$((tries + 1))
+    done
+
+    check "no medium: a starting medium builds the real dialog" "true" \
+        "$(dialog_has_button "Add")"
+    check "no medium: the rebuilt dialog has its label input" "true" \
+        "$(dialog_has_text_field)"
+    check "no medium: the rebuilt dialog starts at the first label" "Bookmark (1)" \
+        "$(dialog_get_input)"
+    # The rebuild goes through main_dialog(), which applies the message
+    # readBookmarks() left pending - so this also says the state survived the
+    # switch from the placeholder.
+    check "no medium: the rebuilt dialog carries the medium's own state" \
+        "$MSG_LEGACY_FOUND" "$(dialog_footer)"
+}
+
+# Lua errors and warnings from the log, minus the ones the legacy phase asks
+# for. Shared by the count and the printout so the two cannot disagree about
+# what counted.
+unexpected_lua_diagnostics() {
+    grep -iE 'lua (error|warning)' "$LOG_FILE" \
+        | grep -vF -e "$EXPECTED_LOG_LEGACY_WARNING" -e "$EXPECTED_LOG_LEGACY_REFUSAL" \
+        || true
+}
+
 test_no_lua_errors() {
     local errors
-    errors="$(grep -ciE 'lua (error|warning)' "$LOG_FILE" || true)"
+    # The planted old-format file draws two diagnostics the extension is right
+    # to emit, so those lines are excluded by their own text. Everything else
+    # that looks like Lua trouble still counts.
+    errors="$(unexpected_lua_diagnostics | grep -c . || true)"
     if [ "$errors" != "0" ]; then
         info "  --- Lua diagnostics from the log ---"
-        grep -iE 'lua (error|warning)' "$LOG_FILE" | sed 's/^/  /'
+        unexpected_lua_diagnostics | sed 's/^/  /'
     fi
     check "no Lua errors or warnings were logged" "0" "$errors"
 }
@@ -884,6 +1118,7 @@ test_no_lua_errors() {
 main() {
     preflight
     make_fixture
+    plant_legacy_bookmark_file
     launch_vlc
     open_dialog_and_resolve_bookmark_file
 
@@ -891,7 +1126,8 @@ main() {
     for phase in test_fresh_medium test_add test_add_ordering test_rename \
                  test_go test_remove test_remove_guards test_default_label_index \
                  test_label_whitespace test_rename_guards test_track_change \
-                 test_playback_stopped test_no_lua_errors; do
+                 test_legacy_readonly test_playback_stopped test_noinput_dialog \
+                 test_no_lua_errors; do
         "$phase"
         input_watch_check "$phase"
     done
