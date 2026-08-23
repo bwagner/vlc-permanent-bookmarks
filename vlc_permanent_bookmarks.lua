@@ -32,6 +32,11 @@ local MSG_LOAD_FAILED = "Existing bookmarks could not be read - not saving over 
 local MSG_LEGACY_FOUND = "Bookmarks are in the old format - run the migration script"
 local MSG_SAVE_BLOCKED = "Not saving - the existing bookmarks were not read"
 local MSG_SAVE_FAILED = "Bookmarks could not be saved"
+-- Rename is two-step: Rename loads the label, Confirm commits it. Add never
+-- renames, so a pending rename cannot be committed by accident.
+local MSG_RENAME_PENDING = "Renaming #%d - click Confirm to commit"
+local MSG_RENAME_NOT_PENDING = "Click Rename first to load a bookmark's name"
+local MSG_RENAME_SELECTION_CHANGED = "Selection changed - reselect #%d to confirm"
 -- Time formats. The stored form keeps milliseconds and is also what the
 -- duplicate check compares, so it must not lose precision. The list drops
 -- them: millisecond precision is noise for seeking, and the four-column
@@ -480,6 +485,17 @@ function table_length(t)
     return count
 end
 
+-- // a label of only whitespace is not a label, and padding is not part of one
+local function trimLabel(text)
+    return string.match(text, "^%s*(.-)%s*$")
+end
+
+-- // put the next default name back in the input, after a bookmark is written
+local function resetLabelInput()
+    local next_index = tostring(getLastBookmarkIndex() + 1)
+    bookmarks_dialog['text_input']:set_text('Bookmark (' .. next_index .. ')')
+end
+
 -- // split a time in microseconds into hours, minutes, seconds and milliseconds
 local function splitTime(micros)
     local millis = math.floor(micros / 1000)
@@ -526,9 +542,13 @@ function main_dialog()
     -- dialog_UI:add_button("Import", show_import_gui, 1, 10, 1, 1)
     -- dialog_UI:add_button("Export", show_export_gui, 1, 11, 1, 1)
 
-    -- footer message_label
-    bookmarks_dialog['footer_message'] = dialog_UI:add_label('', 1, 4, 3, 1)
+    -- Directly under Rename, so it reads as that button's second step. Column 2
+    -- is already sized by "Rename", so this costs no width.
+    dialog_UI:add_button("Confirm", confirmRename, 2, 4, 1, 1)
     dialog_UI:add_button("Show in Finder", showInFinder, 4, 4, 1, 1)
+
+    -- footer message_label, its own full-width row so long messages have room
+    bookmarks_dialog['footer_message'] = dialog_UI:add_label('', 1, 5, 4, 1)
 
     showBookmarks()
     if pendingFooterMessage then
@@ -550,41 +570,65 @@ end
 -- Buttons callbacks -------------------------------------------------------------
 function addBookmark()
     dlt_footer()
+    -- An add shifts every index after the insertion point, so a rename loaded
+    -- before it would commit to the wrong row. Adding cancels it.
+    selectedBookmarkId = nil
     if bookmarks_dialog['text_input'] then
-        local label = bookmarks_dialog['text_input']:get_text()
-        -- a label of only whitespace is not a label
-        label = string.match(label, "^%s*(.-)%s*$")
+        local label = trimLabel(bookmarks_dialog['text_input']:get_text())
         if string.len(label) > 0 then
-            if selectedBookmarkId ~= nil then
-                -- rename an existing bookmark
-                Bookmarks[selectedBookmarkId].label = label
-                selectedBookmarkId = nil
-            else
-                -- add a new bookmark
-                local bookmark = {}
-                bookmark.time = vlc.var.get(input, "time")
-                bookmark.label = label
-                bookmark.formattedTime = getFormattedTime(bookmark.time)
-                local i = table_binInsert(Bookmarks, bookmark, function(a, b)
-                    return a.time <= b.time
-                end)
-                -- bookmark with same time already present
-                if Bookmarks[i] then
-                    if Bookmarks[i].formattedTime == bookmark.formattedTime then
-                        bookmarks_dialog['footer_message']:set_text(setMessageStyle("Bookmark already added"))
-                        return
-                    end
+            local bookmark = {}
+            bookmark.time = vlc.var.get(input, "time")
+            bookmark.label = label
+            bookmark.formattedTime = getFormattedTime(bookmark.time)
+            local i = table_binInsert(Bookmarks, bookmark, function(a, b)
+                return a.time <= b.time
+            end)
+            -- bookmark with same time already present
+            if Bookmarks[i] then
+                if Bookmarks[i].formattedTime == bookmark.formattedTime then
+                    setFooter("Bookmark already added")
+                    return
                 end
-                table.insert(Bookmarks, i, bookmark)
             end
+            table.insert(Bookmarks, i, bookmark)
             saveBookmarks()
             showBookmarks()
-            local next_index = tostring(getLastBookmarkIndex() + 1)
-            bookmarks_dialog['text_input']:set_text('Bookmark (' .. next_index .. ')')
+            resetLabelInput()
         else
-            bookmarks_dialog['footer_message']:set_text(setMessageStyle("Please enter your bookmark title"))
+            setFooter("Please enter your bookmark title")
         end
     end
+end
+
+-- // Commit a rename loaded by editBookmark(), from the Confirm button. Refuses unless the selection is
+-- still the row whose label was loaded, so an edited label can never land on a
+-- bookmark the user did not open.
+function confirmRename()
+    dlt_footer()
+    if not (bookmarks_dialog['text_input'] and bookmarks_dialog['bookmarks_list']) then
+        return
+    end
+    if selectedBookmarkId == nil then
+        setFooter(MSG_RENAME_NOT_PENDING)
+        return
+    end
+    local selection = bookmarks_dialog['bookmarks_list']:get_selection()
+    if not selection or not selection[selectedBookmarkId] or table_length(selection) ~= 1 then
+        -- The pending rename is kept, so reselecting that row and clicking
+        -- Save again works without loading the label a second time.
+        setFooter(string.format(MSG_RENAME_SELECTION_CHANGED, selectedBookmarkId))
+        return
+    end
+    local label = trimLabel(bookmarks_dialog['text_input']:get_text())
+    if string.len(label) == 0 then
+        setFooter("Please enter your bookmark title")
+        return
+    end
+    Bookmarks[selectedBookmarkId].label = label
+    selectedBookmarkId = nil
+    saveBookmarks()
+    showBookmarks()
+    resetLabelInput()
 end
 
 function goToBookmark()
@@ -617,6 +661,7 @@ function editBookmark()
                 for idx, _ in pairs(selection) do
                     bookmarks_dialog['text_input']:set_text(Bookmarks[idx].label)
                     selectedBookmarkId = idx
+                    setFooter(string.format(MSG_RENAME_PENDING, idx))
                     return
                 end
             else

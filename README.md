@@ -106,6 +106,18 @@ the old bookmarks behind a new file.
   `loadfile()`, so reading a bookmark file executes it. Files are now JSON,
   decoded with the `dkjson` module VLC bundles, and entries are validated before
   the UI touches them. This is a format change: see the note above.
+- **`hh:mm:ss` in the list rows.** Upstream shows milliseconds
+  (`00:02:51.238`), which are noise for seeking and cost four characters of
+  label room in a dialog whose width is fixed. The stored `formattedTime` keeps
+  them.
+- **A dedicated Confirm button, and Add that only ever adds.** Upstream commits
+  a rename by clicking **Add**: Rename loads the selected label into the input,
+  and Add then writes it back. Nothing on screen says which of the two things
+  Add is about to do, and a rename loaded before an Add silently wins. Rename
+  now announces itself in the footer, **Confirm** - placed directly under Rename
+  as its second step - commits it, and Add always adds. A pending rename is also
+  refused if the selection has moved to another row, since the edited text came
+  from the row that was loaded.
 - **"Show in Finder" button.** Reveals this medium's bookmark file in Finder.
   Nothing is written until the first bookmark is saved, so on a medium with no
   bookmarks yet it opens the folder the file will live in and says so in the

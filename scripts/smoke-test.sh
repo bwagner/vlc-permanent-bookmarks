@@ -517,6 +517,7 @@ test_fresh_medium() {
     check "a fresh medium shows an empty list" "0" "$(dialog_row_count)"
     check "the default label starts at index 1" "Bookmark (1)" "$(dialog_get_input)"
     check "the dialog offers Show in Finder" "true" "$(dialog_has_button "Show in Finder")"
+    check "the dialog offers Confirm" "true" "$(dialog_has_button "Confirm")"
 }
 
 test_add() {
@@ -560,10 +561,15 @@ test_rename() {
     check "rename: Rename loads the selected label into the input" "gamma" "$(dialog_get_input)"
 
     dialog_set_input "gamma-renamed"
-    dialog_click "Add"
-    check "rename: Add commits the new label" "gamma-renamed,alpha,beta" "$(bookmarks_labels)"
+    dialog_click "Confirm"
+    check "rename: Confirm commits the new label" "gamma-renamed,alpha,beta" "$(bookmarks_labels)"
     check "rename: the bookmark count is unchanged" "3" "$(bookmarks_count)"
     check_near "rename: the bookmark time is unchanged" "$((T_GAMMA * MICROS_PER_SECOND))" "$(bookmarks_field 1 2)"
+
+    # Confirm consumed the pending rename, so a second click has nothing to commit.
+    dialog_set_input "stray"
+    dialog_click "Confirm"
+    check "rename: Confirm with nothing pending changes nothing" "gamma-renamed,alpha,beta" "$(bookmarks_labels)"
 }
 
 test_go() {
@@ -615,6 +621,40 @@ test_label_whitespace() {
     check "trim: cleanup left two bookmarks" "$before" "$(bookmarks_count)"
 }
 
+# Rename loads a label and only Confirm commits it. Add always adds, and a pending
+# rename refuses to land on a row other than the one it was loaded from - both
+# were possible while Add doubled as the commit button.
+test_rename_guards() {
+    local before
+    before="$(bookmarks_count)"
+
+    dialog_select_row 1
+    dialog_click "Rename"
+    vlc_seek "$T_ELSEWHERE"
+    dialog_set_input "added-not-renamed"
+    dialog_click "Add"
+    check "guard: Add after Rename adds instead of renaming" "$((before + 1))" "$(bookmarks_count)"
+    check "guard: the loaded bookmark keeps its label" "gamma-renamed" "$(bookmarks_field 1 4)"
+
+    dialog_select_row 3
+    dialog_click "Remove"
+    check "guard: cleanup left two bookmarks" "$before" "$(bookmarks_count)"
+
+    # Loaded from row 1, committed with row 2 selected: refused, nothing written.
+    dialog_select_row 1
+    dialog_click "Rename"
+    dialog_set_input "drifted"
+    dialog_select_row 2
+    dialog_click "Confirm"
+    check "guard: Confirm refuses when the selection moved" "gamma-renamed,beta" "$(bookmarks_labels)"
+
+    # The refusal keeps the pending rename, so reselecting the row commits it
+    # without having to load the label again.
+    dialog_select_row 1
+    dialog_click "Confirm"
+    check "guard: reselecting the row commits the pending rename" "drifted,beta" "$(bookmarks_labels)"
+}
+
 test_no_lua_errors() {
     local errors
     errors="$(grep -ciE 'lua (error|warning)' "$LOG_FILE" || true)"
@@ -636,7 +676,7 @@ main() {
     local phase
     for phase in test_fresh_medium test_add test_add_ordering test_rename \
                  test_go test_remove test_default_label_index \
-                 test_label_whitespace test_no_lua_errors; do
+                 test_label_whitespace test_rename_guards test_no_lua_errors; do
         "$phase"
         input_watch_check "$phase"
     done
