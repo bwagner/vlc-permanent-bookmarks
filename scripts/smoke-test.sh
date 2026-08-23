@@ -501,12 +501,22 @@ test_default_label_index() {
     check "default label: cleanup left two bookmarks" "2" "$(bookmarks_count)"
 }
 
-test_whitespace_label_is_rejected() {
+test_label_whitespace() {
     local before
     before="$(bookmarks_count)"
     dialog_set_input "   "
     dialog_click "Add"
-    xcheck "a whitespace-only label is rejected" "$before" "$(bookmarks_count)"
+    check "a whitespace-only label is rejected" "$before" "$(bookmarks_count)"
+
+    # Surrounding whitespace is stripped, so the stored label is the trimmed one.
+    vlc_seek "$T_ELSEWHERE"
+    dialog_set_input "  padded  "
+    dialog_click "Add"
+    check "a padded label is stored trimmed" "padded" "$(bookmarks_field 3 4)"
+
+    dialog_select_row 3
+    dialog_click "Remove"
+    check "trim: cleanup left two bookmarks" "$before" "$(bookmarks_count)"
 }
 
 test_no_lua_errors() {
@@ -534,7 +544,7 @@ main() {
     test_go
     test_remove
     test_default_label_index
-    test_whitespace_label_is_rejected
+    test_label_whitespace
     test_no_lua_errors
 
     info ""

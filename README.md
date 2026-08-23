@@ -65,8 +65,9 @@ lifecycle. It touches exactly one bookmark file - the one keyed by the generated
 fixture's hash, read from VLC's own debug log - and deletes it afterwards. No
 other file in the bookmarks directory is opened.
 
-Known-open bugs are included as `XFAIL` tests: they are expected to fail, do not
-fail the run, and turn into an `XPASS` prompting promotion once fixed.
+Known-open bugs can be carried as `XFAIL` tests: they are expected to fail, do
+not fail the run, and turn into an `XPASS` prompting promotion once fixed. There
+are none at present.
 
 Not covered: multi-item selection. The accessibility API replaces the list
 selection rather than extending it, so the multi-select branches of

@@ -440,6 +440,8 @@ function addBookmark()
     dlt_footer()
     if bookmarks_dialog['text_input'] then
         local label = bookmarks_dialog['text_input']:get_text()
+        -- a label of only whitespace is not a label
+        label = string.match(label, "^%s*(.-)%s*$")
         if string.len(label) > 0 then
             if selectedBookmarkId ~= nil then
                 -- rename an existing bookmark
