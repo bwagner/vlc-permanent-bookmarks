@@ -10,6 +10,28 @@ local bookmarksDir = nil
 -- Finder integration (macOS): reveal the bookmark file, or open its folder
 local FINDER_REVEAL_CMD = "open -R "
 local FINDER_OPEN_CMD = "open "
+-- Bookmark file format. The file is JSON data, decoded with the dkjson module
+-- that VLC bundles, and is never executed. The previous format was a Lua chunk
+-- read with loadfile(), which made any bookmark file arriving from elsewhere
+-- arbitrary code running inside VLC's Lua state.
+local JSON_MODULE = "dkjson"
+local BOOKMARK_FILE_EXT = ".json"
+local BOOKMARK_FORMAT_VERSION = 1
+-- Fixed key order, so a rewritten file diffs cleanly against the previous one.
+local JSON_KEY_ORDER = {"version", "bookmarks", "time", "formattedTime", "label"}
+local JSON_INDENT = true
+local json = nil
+-- Set when a file exists on disk but could not be trusted. Blocks saving, so a
+-- failed read can never be turned into an overwrite.
+local bookmarksReadOnly = false
+local legacyBookmarkFilePath = nil
+local pendingFooterMessage = nil
+-- Footer messages
+local MSG_JSON_MISSING = "Bookmarks unavailable - the dkjson module is missing"
+local MSG_LOAD_FAILED = "Existing bookmarks could not be read - not saving over them"
+local MSG_LEGACY_FOUND = "Bookmarks are in the old format - run the migration script"
+local MSG_SAVE_BLOCKED = "Not saving - the existing bookmarks were not read"
+local MSG_SAVE_FAILED = "Bookmarks could not be saved"
 -- UI
 local dialog_UI = nil
 local bookmarks_dialog = {}
@@ -38,6 +60,7 @@ function activate()
         vlc.msg.err(err)
         return false
     end
+    loadJsonModule()
     show_gui()
 end
 
@@ -78,6 +101,9 @@ function input_changed() -- ~ !important: deve essere qualcosa di veloce
         Bookmarks = {}
         selectedBookmarkId = nil
         bookmarkFilePath = nil
+        legacyBookmarkFilePath = nil
+        pendingFooterMessage = nil
+        bookmarksReadOnly = false
     end
 end
 
@@ -113,8 +139,9 @@ function load_bookmarks()
 
         getFileHash()
         if mediaFile.hash then
-            bookmarkFilePath = bookmarksDir .. slash .. mediaFile.hash
-            Bookmarks = table_load(bookmarkFilePath)
+            bookmarkFilePath = bookmarksDir .. slash .. mediaFile.hash .. BOOKMARK_FILE_EXT
+            legacyBookmarkFilePath = bookmarksDir .. slash .. mediaFile.hash
+            readBookmarks()
             input = vlc.object.input()
         end
     end
@@ -252,141 +279,151 @@ function check_config()
     return true
 end
 
+-- // Load the JSON module VLC bundles. Without it the extension can neither
+-- read nor write, so the failure is reported instead of silently degrading.
+function loadJsonModule()
+    local ok, module = pcall(require, JSON_MODULE)
+    if ok and type(module) == "table" and type(module.encode) == "function" and type(module.decode) == "function" then
+        json = module
+        return true
+    end
+    json = nil
+    vlc.msg.err("Failed to load the " .. JSON_MODULE .. " module: " .. tostring(module))
+    return false
+end
+
+-- // Footer text. Silently ignored before the dialog exists, so the load path
+-- can raise a message before there is anywhere to put it.
+function setFooter(text)
+    if bookmarks_dialog['footer_message'] then
+        bookmarks_dialog['footer_message']:set_text(setMessageStyle(text))
+    end
+end
+
+-- // Read a bookmark file. The content is decoded as data and never executed.
+-- Returns the bookmark list, or nil plus an error message.
+function loadBookmarksFile(filePath)
+    local file, openErr = io.open(filePath, "rb")
+    if not file then
+        return nil, openErr or "open failed"
+    end
+    local content = file:read("*a")
+    file:close()
+    if not content then
+        return nil, "read failed"
+    end
+
+    local decoded, _, decodeErr = json.decode(content)
+    if type(decoded) ~= "table" then
+        return nil, decodeErr or "not a JSON object"
+    end
+    if type(decoded.bookmarks) ~= "table" then
+        return nil, "no bookmarks array"
+    end
+
+    -- The file is untrusted input, so entries are checked before the UI
+    -- concatenates them. A malformed entry is dropped rather than fatal.
+    local bookmarks = {}
+    for _, entry in ipairs(decoded.bookmarks) do
+        if type(entry) == "table" and type(entry.time) == "number" and type(entry.label) == "string" then
+            local formatted = entry.formattedTime
+            if type(formatted) ~= "string" then
+                formatted = getFormattedTime(entry.time)
+            end
+            table.insert(bookmarks, {
+                time = entry.time,
+                label = entry.label,
+                formattedTime = formatted
+            })
+        else
+            vlc.msg.warn("Skipping a malformed bookmark entry in " .. tostring(filePath))
+        end
+    end
+    return bookmarks
+end
+
+-- // Populate Bookmarks for the current medium
+function readBookmarks()
+    Bookmarks = {}
+    bookmarksReadOnly = false
+    pendingFooterMessage = nil
+
+    if not json then
+        bookmarksReadOnly = true
+        pendingFooterMessage = MSG_JSON_MISSING
+        return
+    end
+
+    if not fileExists(bookmarkFilePath) then
+        -- An old-format file is left exactly as it is and never executed. Until
+        -- the migration script converts it this medium stays read-only, so an
+        -- Add cannot strand the old bookmarks behind a new file.
+        if legacyBookmarkFilePath and fileExists(legacyBookmarkFilePath) then
+            bookmarksReadOnly = true
+            pendingFooterMessage = MSG_LEGACY_FOUND
+            vlc.msg.warn("Old-format bookmark file found: " .. tostring(legacyBookmarkFilePath))
+        end
+        return
+    end
+
+    local bookmarks, err = loadBookmarksFile(bookmarkFilePath)
+    if not bookmarks then
+        bookmarksReadOnly = true
+        pendingFooterMessage = MSG_LOAD_FAILED
+        vlc.msg.err("Failed to read bookmarks from " .. tostring(bookmarkFilePath) .. ": " .. tostring(err))
+        return
+    end
+    Bookmarks = bookmarks
+end
+
 -- // Persist Bookmarks, reporting a write failure instead of losing it
 function saveBookmarks()
-    local err = table_save(Bookmarks, bookmarkFilePath)
+    if bookmarksReadOnly then
+        vlc.msg.err("Refusing to save over bookmarks that were not read: " .. tostring(bookmarkFilePath))
+        setFooter(pendingFooterMessage or MSG_SAVE_BLOCKED)
+        return false
+    end
+    local err = saveBookmarksFile(Bookmarks, bookmarkFilePath)
     if not err then
         return true
     end
     vlc.msg.err("Failed to save bookmarks to " .. tostring(bookmarkFilePath) .. ": " .. tostring(err))
-    if bookmarks_dialog['footer_message'] then
-        bookmarks_dialog['footer_message']:set_text(setMessageStyle("Bookmarks could not be saved"))
-    end
+    setFooter(MSG_SAVE_FAILED)
     return false
 end
 
--- // The Save Function
-function table_save(t, filePath)
-    local function exportstring(s)
-        return string.format("%q", s)
+-- // The Save Function. Encodes once and writes once, so a failing disk has a
+-- single point to report, and both write() and close() are checked.
+function saveBookmarksFile(bookmarks, filePath)
+    if not json then
+        return "the " .. JSON_MODULE .. " module is missing"
     end
-
-    local charS, charE = "   ", "\n"
-    local file, err = io.open(filePath, "wb")
-    if err then
-        return err
-    end
-
-    -- Buffer the whole table and write it once, so a failing disk has a
-    -- single point to report instead of eleven unchecked writes.
-    local out = {}
-    local function w(str)
-        out[#out + 1] = str
-    end
-
-    -- initiate variables for save procedure
-    local tables, lookup = {t}, {
-        [t] = 1
+    local payload = {
+        version = BOOKMARK_FORMAT_VERSION,
+        bookmarks = bookmarks
     }
-    w("return {" .. charE)
-
-    for idx, tbl in ipairs(tables) do
-        w("-- Table: {" .. idx .. "}" .. charE)
-        w("{" .. charE)
-        local thandled = {}
-
-        for i, v in ipairs(tbl) do
-            thandled[i] = true
-            local stype = type(v)
-            -- only handle value
-            if stype == "table" then
-                if not lookup[v] then
-                    table.insert(tables, v)
-                    lookup[v] = #tables
-                end
-                w(charS .. "{" .. lookup[v] .. "}," .. charE)
-            elseif stype == "string" then
-                w(charS .. exportstring(v) .. "," .. charE)
-            elseif stype == "number" then
-                w(charS .. tostring(v) .. "," .. charE)
-            end
-        end
-
-        for i, v in pairs(tbl) do
-            -- escape handled values
-            if (not thandled[i]) then
-
-                local str = ""
-                local stype = type(i)
-                -- handle index
-                if stype == "table" then
-                    if not lookup[i] then
-                        table.insert(tables, i)
-                        lookup[i] = #tables
-                    end
-                    str = charS .. "[{" .. lookup[i] .. "}]="
-                elseif stype == "string" then
-                    str = charS .. "[" .. exportstring(i) .. "]="
-                elseif stype == "number" then
-                    str = charS .. "[" .. tostring(i) .. "]="
-                end
-
-                if str ~= "" then
-                    stype = type(v)
-                    -- handle value
-                    if stype == "table" then
-                        if not lookup[v] then
-                            table.insert(tables, v)
-                            lookup[v] = #tables
-                        end
-                        w(str .. "{" .. lookup[v] .. "}," .. charE)
-                    elseif stype == "string" then
-                        w(str .. exportstring(v) .. "," .. charE)
-                    elseif stype == "number" then
-                        w(str .. tostring(v) .. "," .. charE)
-                    end
-                end
-            end
-        end
-        w("}," .. charE)
+    local ok, encoded = pcall(json.encode, payload, {
+        indent = JSON_INDENT,
+        keyorder = JSON_KEY_ORDER
+    })
+    if not ok or type(encoded) ~= "string" then
+        return tostring(encoded)
     end
-    w("}")
 
-    local ok, werr = file:write(table.concat(out))
-    if not ok then
+    local file, openErr = io.open(filePath, "wb")
+    if not file then
+        return openErr or "open failed"
+    end
+    local written, writeErr = file:write(encoded)
+    if not written then
         file:close()
-        return werr or "write failed"
+        return writeErr or "write failed"
     end
     -- close() flushes, so it is the second place a full disk shows up
-    local closed, cerr = file:close()
+    local closed, closeErr = file:close()
     if not closed then
-        return cerr or "close failed"
+        return closeErr or "close failed"
     end
-end
-
--- // The Load Function
-function table_load(filePath)
-    local ftables, err = loadfile(filePath)
-    if err then
-        return {}, err
-    end
-    local tables = ftables()
-    for idx = 1, #tables do
-        local tolinki = {}
-        for i, v in pairs(tables[idx]) do
-            if type(v) == "table" then
-                tables[idx][i] = tables[v[1]]
-            end
-            if type(i) == "table" and tables[i[1]] then
-                table.insert(tolinki, {i, tables[i[1]]})
-            end
-        end
-        -- link indices
-        for _, v in ipairs(tolinki) do
-            tables[idx][v[2]], tables[idx][v[1]] = tables[idx][v[1]], nil
-        end
-    end
-    return tables[1]
 end
 
 -- // The Binary Insert Function
@@ -460,6 +497,9 @@ function main_dialog()
     dialog_UI:add_button("Show in Finder", showInFinder, 4, 4, 1, 1)
 
     showBookmarks()
+    if pendingFooterMessage then
+        setFooter(pendingFooterMessage)
+    end
     dialog_UI:show()
 end
 

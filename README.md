@@ -24,7 +24,35 @@ Restart VLC. The extension appears under the **VLC** menu > **Extensions**
 Bookmarks are stored one file per medium, keyed by a hash of the first and last
 64 KB plus the byte size, under
 `~/Library/Application Support/org.videolan.vlc/lua/extensions/userdata/bookmarks/`.
-The hash is unchanged from upstream, so existing bookmark files stay valid.
+The hash is unchanged from upstream. The file format is not: files are now
+JSON, named `<hash>.json`.
+
+    {
+      "version":1,
+      "bookmarks":[
+        {
+          "time":86205080,
+          "formattedTime":"00:01:26.205",
+          "label":"Bookmark (1)"
+        }
+      ]
+    }
+
+`time` is the playback position in microseconds and is what the extension seeks
+to; `formattedTime` is derived from it and only ever displayed.
+
+### Bookmarks written by an older version
+
+Upstream stores each file as a Lua chunk and reads it back with `loadfile()`,
+which executes it. Bookmark files are keyed by media content, so they travel
+with a video and are the kind of thing that gets shared or synced - and any one
+of them could run arbitrary code inside VLC. This fork reads JSON data instead
+and never executes a bookmark file.
+
+Old files are not read, and they are not converted automatically. Until a
+medium is converted the extension shows its bookmarks as empty and refuses to
+save over them, saying so in the footer - so an Add can never strand the old
+bookmarks behind a new file.
 
 ## Changes against upstream
 
@@ -39,6 +67,10 @@ The hash is unchanged from upstream, so existing bookmark files stay valid.
   produces duplicate default names.
 - **Plain-space separator** in list rows. Upstream used U+3164 Hangul filler,
   which renders zero-width in the macOS dialog font.
+- **JSON bookmark files.** Upstream's format is a Lua chunk loaded with
+  `loadfile()`, so reading a bookmark file executes it. Files are now JSON,
+  decoded with the `dkjson` module VLC bundles, and entries are validated before
+  the UI touches them. This is a format change: see the note above.
 - **"Show in Finder" button.** Reveals this medium's bookmark file in Finder.
   Nothing is written until the first bookmark is saved, so on a medium with no
   bookmarks yet it opens the folder the file will live in and says so in the
@@ -55,11 +87,10 @@ catches style problems but has never found a bug in this file.
 The script generates a 5-minute test video with ffmpeg, launches VLC on it with
 debug logging, opens the extension, and drives the dialog through the macOS
 accessibility API - add, sort order, rename, go, remove - asserting after each
-step against the bookmark file the extension actually wrote. `scripts/dump_bookmarks.lua`
-reads those files back; they are plain Lua table constructors, so they load
-directly.
+step against the bookmark file the extension actually wrote, which `jq` reads
+back - so a malformed file fails the run rather than being quietly tolerated.
 
-Requirements: macOS, VLC 3.x, `ffmpeg`, `lua`, and Accessibility permission for
+Requirements: macOS, VLC 3.x, `ffmpeg`, `jq`, and Accessibility permission for
 the terminal application you run it from (System Settings > Privacy & Security >
 Accessibility). It drives the real GUI and takes over the screen for about
 thirty seconds; it cannot run headless or over ssh.

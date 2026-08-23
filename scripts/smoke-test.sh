@@ -11,7 +11,7 @@
 # fixture's hash, read from VLC's own debug log. No other file under the
 # bookmarks directory is opened, read or written.
 #
-# Requirements: macOS, VLC 3.x, ffmpeg, lua, and Accessibility permission for
+# Requirements: macOS, VLC 3.x, ffmpeg, jq, and Accessibility permission for
 # the terminal application running this script.
 
 set -euo pipefail
@@ -24,7 +24,10 @@ readonly VLC_APP_BUNDLE="/Applications/VLC.app"
 readonly VLC_APP_NAME="VLC"
 readonly EXTENSIONS_DIR="$HOME/Library/Application Support/org.videolan.vlc/lua/extensions"
 readonly BOOKMARKS_DIR="$EXTENSIONS_DIR/userdata/bookmarks"
-readonly DUMP_BOOKMARKS="$REPO_DIR/scripts/dump_bookmarks.lua"
+
+# Bookmark files are JSON and named <hash>.json; must match BOOKMARK_FILE_EXT
+# in the extension.
+readonly BOOKMARK_FILE_EXT=".json"
 
 # The dialog title, which is also the Extensions menu entry (descriptor.title).
 readonly DIALOG_TITLE="VLC Permanent Bookmarks"
@@ -318,9 +321,14 @@ dialog_row_text() {
 
 # --- Bookmark file helpers -------------------------------------------------
 
+# TSV, one line per bookmark: index, time (us), formattedTime, label. The file
+# is JSON, so jq reads it directly and doubles as a parse check - malformed
+# output from the extension fails here rather than being quietly tolerated.
 bookmarks_dump() {
     [ -e "$BOOKMARK_FILE" ] || return 0
-    lua "$DUMP_BOOKMARKS" "$BOOKMARK_FILE"
+    jq -r '.bookmarks | to_entries[]
+           | [(.key + 1), .value.time, .value.formattedTime, .value.label]
+           | @tsv' "$BOOKMARK_FILE"
 }
 
 bookmarks_count() { bookmarks_dump | grep -c . || true; }
@@ -369,12 +377,11 @@ preflight() {
     info "=== Preflight ==="
 
     local missing=""
-    for cmd in ffmpeg lua osascript; do
+    for cmd in ffmpeg jq osascript; do
         command -v "$cmd" >/dev/null 2>&1 || missing="$missing $cmd"
     done
     if [ -n "$missing" ]; then abort "missing required command(s):$missing"; fi
     [ -d "$VLC_APP_BUNDLE" ] || abort "VLC not found at $VLC_APP_BUNDLE"
-    [ -f "$DUMP_BOOKMARKS" ] || abort "missing $DUMP_BOOKMARKS"
 
     osa -e 'tell application "System Events" to return name of first process whose frontmost is true' >/dev/null 2>&1 \
         || abort "System Events is not scriptable. Grant Accessibility permission to this terminal application in System Settings > Privacy & Security > Accessibility."
@@ -481,7 +488,7 @@ open_dialog_and_resolve_bookmark_file() {
         abort "the extension never logged a file hash - see $LOG_FILE"
     fi
 
-    local candidate="$BOOKMARKS_DIR/$hash"
+    local candidate="$BOOKMARKS_DIR/$hash$BOOKMARK_FILE_EXT"
     info "Fixture hash: $hash"
     info "Bookmark file: $candidate"
     if [ -e "$candidate" ]; then
