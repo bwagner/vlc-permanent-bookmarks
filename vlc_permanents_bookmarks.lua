@@ -127,22 +127,39 @@ function getFileHash()
     -- Get data for hash calculation
     vlc.msg.dbg("init read hash data from stream")
     local stream = vlc.stream(mediaFile.uri)
+    if not stream then
+        vlc.msg.warn("Failed to open stream for: " .. mediaFile.uri)
+        return false
+    end
+
     data_start = stream:read(chunk_size)
+    if not data_start or #data_start == 0 then
+        vlc.msg.warn("Failed to read data from start of stream")
+        return false
+    end
+
     ok, size = pcall(stream.getsize, stream)
-    if not size then
-        vlc.msg.warn("Failed to get stream size: " .. size)
+    if not ok or not size or size <= 0 then
+        vlc.msg.warn("Failed to get stream size: " .. tostring(size))
         return false
     end
     mediaFile.bytesize = size
     vlc.msg.dbg("File bytesize: " .. mediaFile.bytesize)
-    -- size = math.floor(size / 2)
-    ok, err = pcall(stream.seek, stream, size - chunk_size)
-    if not ok then
-        vlc.msg.warn("Failed to seek the stream: " .. err)
-        return false
+
+    -- For small files, don't try to seek to the end
+    if size <= chunk_size then
+        data_end = ""
+    else
+        ok, err = pcall(stream.seek, stream, size - chunk_size)
+        if not ok then
+            vlc.msg.warn("Failed to seek the stream: " .. tostring(err))
+            return false
+        end
+        data_end = stream:read(chunk_size)
+        if not data_end then
+            data_end = ""
+        end
     end
-    data_end = stream:read(chunk_size)
-    -- stream = nil
     vlc.msg.dbg("finish Read hash data from stream")
 
     -- Hash calculation
@@ -156,6 +173,9 @@ function getFileHash()
 
     for i = 1, #hash_data, 8 do
         a, b, c, d, e, f, g, h = hash_data:byte(i, i + 7)
+        a, b, c, d = a or 0, b or 0, c or 0, d or 0
+        e, f, g, h = e or 0, f or 0, g or 0, h or 0
+
         lo = lo + a + b * 256 + c * 65536 + d * 16777216
         hi = hi + e + f * 256 + g * 65536 + h * 16777216
 
