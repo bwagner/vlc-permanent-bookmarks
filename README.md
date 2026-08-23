@@ -69,8 +69,8 @@ against two hashes the extension itself produced.
 Upstream stores each file as a Lua chunk and reads it back with `loadfile()`,
 which executes it. Bookmark files are keyed by media content, so they travel
 with a video and are the kind of thing that gets shared or synced - and any one
-of them could run arbitrary code inside VLC. This fork reads JSON data instead
-and never executes a bookmark file.
+of them could run arbitrary shell commands as your user. This fork reads JSON
+data instead and never executes a bookmark file.
 
 Old files are not read. Convert them once, with VLC closed:
 
@@ -134,7 +134,7 @@ that path it aborts without touching it: the path is handed to the cleanup trap
 only after that check has passed, so a run can only ever delete a file it
 created itself.
 
-### Leave the machine alone while it runs
+### Leave the machine alone while the test runs
 
 Using the keyboard, mouse or trackpad during a run derails it: a click steals
 focus from the dialog, a keystroke lands in its text field. The harness cannot
