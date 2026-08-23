@@ -4,6 +4,9 @@ local input = nil
 local Bookmarks = {}
 local selectedBookmarkId = nil
 local bookmarkFilePath = nil
+-- System, set by check_config()
+local slash = nil
+local bookmarksDir = nil
 -- UI
 local dialog_UI = nil
 local bookmarks_dialog = {}

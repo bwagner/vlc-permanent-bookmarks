@@ -78,9 +78,7 @@ this harness.
 
     luacheck .
 
-Baseline is **27 warnings, 0 errors**. It is deliberately not zero: 19 of the 27
-are the implicit globals `slash` and `bookmarksDir`. Treat any count above 27 as
-a regression.
+Baseline is **8 warnings, 0 errors**. Treat any count above 8 as a regression.
 
 ## macOS notes
 
