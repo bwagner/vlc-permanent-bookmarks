@@ -15,7 +15,7 @@ The extension must NOT live inside the VLC app bundle: that breaks the code
 signature and is wiped by VLC upgrades. Symlink it into the user extensions
 directory instead, which VLC scans and which follows symlinks:
 
-    ln -s "$PWD/vlc_permanents_bookmarks.lua" \
+    ln -s "$PWD/vlc_permanent_bookmarks.lua" \
       ~/Library/"Application Support"/org.videolan.vlc/lua/extensions/
 
 Restart VLC. The extension appears under the **VLC** menu > **Extensions**

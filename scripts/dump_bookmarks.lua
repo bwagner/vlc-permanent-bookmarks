@@ -1,6 +1,6 @@
 -- Dump a saved bookmark file as TSV: index, time (us), formattedTime, label.
 --
--- The files written by table_save() in vlc_permanents_bookmarks.lua are plain
+-- The files written by table_save() in vlc_permanent_bookmarks.lua are plain
 -- Lua table constructors, so they can be loaded directly. This mirrors
 -- table_load(), including the index-linking pass, so the dumper cannot drift
 -- from the format the extension actually writes.

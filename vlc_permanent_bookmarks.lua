@@ -10,7 +10,7 @@ local bookmarksDir = nil
 -- UI
 local dialog_UI = nil
 local bookmarks_dialog = {}
-local dialog_title = "VLC Permanents Bookmarks"
+local dialog_title = "VLC Permanent Bookmarks"
 ------------------------------------------------------------------------
 
 -- VLC defined callback functions --------------------------------------

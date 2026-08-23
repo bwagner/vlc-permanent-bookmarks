@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# End-to-end smoke test for the vlc_permanents_bookmarks VLC extension.
+# End-to-end smoke test for the vlc_permanent_bookmarks VLC extension.
 #
 # There is no Lua interpreter inside VLC and no offline harness for extension
 # code, so the only way to test this extension is to run it: launch VLC on a
@@ -19,7 +19,7 @@ set -euo pipefail
 # --- Configuration ---------------------------------------------------------
 
 readonly REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-readonly EXTENSION_FILE="vlc_permanents_bookmarks.lua"
+readonly EXTENSION_FILE="vlc_permanent_bookmarks.lua"
 readonly VLC_APP_BUNDLE="/Applications/VLC.app"
 readonly VLC_APP_NAME="VLC"
 readonly EXTENSIONS_DIR="$HOME/Library/Application Support/org.videolan.vlc/lua/extensions"
@@ -27,7 +27,7 @@ readonly BOOKMARKS_DIR="$EXTENSIONS_DIR/userdata/bookmarks"
 readonly DUMP_BOOKMARKS="$REPO_DIR/scripts/dump_bookmarks.lua"
 
 # The dialog title, which is also the Extensions menu entry (descriptor.title).
-readonly DIALOG_TITLE="VLC Permanents Bookmarks"
+readonly DIALOG_TITLE="VLC Permanent Bookmarks"
 
 # Fixture: 5 minutes of testsrc. The keyframe interval equals the frame rate, so
 # there is a keyframe every second and seeks land exactly on the second asked
