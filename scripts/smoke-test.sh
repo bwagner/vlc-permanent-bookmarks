@@ -481,12 +481,16 @@ open_dialog_and_resolve_bookmark_file() {
         abort "the extension never logged a file hash - see $LOG_FILE"
     fi
 
-    BOOKMARK_FILE="$BOOKMARKS_DIR/$hash"
+    local candidate="$BOOKMARKS_DIR/$hash"
     info "Fixture hash: $hash"
-    info "Bookmark file: $BOOKMARK_FILE"
-    if [ -e "$BOOKMARK_FILE" ]; then
-        abort "a bookmark file already exists for the fixture hash. Refusing to overwrite pre-existing data at $BOOKMARK_FILE"
+    info "Bookmark file: $candidate"
+    if [ -e "$candidate" ]; then
+        abort "a bookmark file already exists for the fixture hash. Refusing to overwrite pre-existing data at $candidate"
     fi
+    # Assigned only once the guard above has passed. cleanup() deletes
+    # BOOKMARK_FILE, so anything assigned before the guard would be destroyed by
+    # the EXIT trap on the very abort that refused to touch it.
+    BOOKMARK_FILE="$candidate"
 }
 
 # --- Tests -----------------------------------------------------------------

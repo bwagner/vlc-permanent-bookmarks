@@ -67,7 +67,10 @@ thirty seconds; it cannot run headless or over ssh.
 It refuses to start if VLC is already running, because it controls VLC's
 lifecycle. It touches exactly one bookmark file - the one keyed by the generated
 fixture's hash, read from VLC's own debug log - and deletes it afterwards. No
-other file in the bookmarks directory is opened.
+other file in the bookmarks directory is opened. If a file already exists at
+that path it aborts without touching it: the path is handed to the cleanup trap
+only after that check has passed, so a run can only ever delete a file it
+created itself.
 
 ### Leave the machine alone while it runs
 
