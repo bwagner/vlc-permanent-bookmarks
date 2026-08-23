@@ -287,12 +287,12 @@ function table_save(t, filePath)
     }
     w("return {" .. charE)
 
-    for idx, t in ipairs(tables) do
+    for idx, tbl in ipairs(tables) do
         w("-- Table: {" .. idx .. "}" .. charE)
         w("{" .. charE)
         local thandled = {}
 
-        for i, v in ipairs(t) do
+        for i, v in ipairs(tbl) do
             thandled[i] = true
             local stype = type(v)
             -- only handle value
@@ -309,7 +309,7 @@ function table_save(t, filePath)
             end
         end
 
-        for i, v in pairs(t) do
+        for i, v in pairs(tbl) do
             -- escape handled values
             if (not thandled[i]) then
 
@@ -392,7 +392,7 @@ function table_binInsert(t, value, fcomp)
         return a < b
     end
     -- Initialise compare function
-    local fcomp = fcomp or fcomp_default
+    fcomp = fcomp or fcomp_default
     --  Initialise numbers
     local iStart, iEnd, iMid, iState = 1, #t, 1, 0
     -- Get insert position
@@ -483,21 +483,21 @@ function addBookmark()
                 selectedBookmarkId = nil
             else
                 -- add a new bookmark
-                local b = {}
-                b.time = vlc.var.get(input, "time")
-                b.label = label
-                b.formattedTime = getFormattedTime(b.time)
-                local i = table_binInsert(Bookmarks, b, function(a, b)
+                local bookmark = {}
+                bookmark.time = vlc.var.get(input, "time")
+                bookmark.label = label
+                bookmark.formattedTime = getFormattedTime(bookmark.time)
+                local i = table_binInsert(Bookmarks, bookmark, function(a, b)
                     return a.time <= b.time
                 end)
                 -- bookmark with same time already present
                 if Bookmarks[i] then
-                    if Bookmarks[i].formattedTime == b.formattedTime then
+                    if Bookmarks[i].formattedTime == bookmark.formattedTime then
                         bookmarks_dialog['footer_message']:set_text(setMessageStyle("Bookmark already added"))
                         return
                     end
                 end
-                table.insert(Bookmarks, i, b)
+                table.insert(Bookmarks, i, bookmark)
             end
             saveBookmarks()
             showBookmarks()

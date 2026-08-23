@@ -78,7 +78,10 @@ this harness.
 
     luacheck .
 
-Baseline is **5 warnings, 0 errors**. Treat any count above 5 as a regression.
+Baseline is **2 warnings, 0 errors**. Both are `loop is executed at most
+once` in `goToBookmark()` and `editBookmark()`, where a `pairs()` loop over a
+single-element selection breaks on the first iteration. Rewriting them is a
+behavior change, not housekeeping. Treat any count above 2 as a regression.
 
 ## macOS notes
 
