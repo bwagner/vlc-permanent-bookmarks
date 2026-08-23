@@ -429,7 +429,7 @@ function showBookmarks()
     if bookmarks_dialog['bookmarks_list'] then
         bookmarks_dialog['bookmarks_list']:clear()
         for idx, b in pairs(Bookmarks) do
-            local text = '#' .. idx .. ' - ' .. b.formattedTime .. 'ㅤ-ㅤ' .. b.label
+            local text = '#' .. idx .. ' - ' .. b.formattedTime .. ' - ' .. b.label
             bookmarks_dialog['bookmarks_list']:add_value(text, idx)
         end
     end
