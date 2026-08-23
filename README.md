@@ -118,6 +118,17 @@ the old bookmarks behind a new file.
   as its second step - commits it, and Add always adds. A pending rename is also
   refused if the selection has moved to another row, since the edited text came
   from the row that was loaded.
+- **The dialog survives a track change.** Upstream hides it and drops all its
+  state whenever the medium changes, so it has to be reopened from the
+  Extensions menu for every track. It now reloads in place: the same window
+  stays where it is and its list, default label and footer follow the new
+  medium. Stopping playback altogether leaves the dialog up with an empty list
+  and "No media playing" in the footer, where **Add** refuses - with its own
+  wording, "Nothing to bookmark - no media is playing", so that pressing it
+  visibly answers rather than repeating the message already on screen -
+  instead of reading a position that does not exist. Rebuilding the window instead would
+  have been two lines, but it would drop the dialog back at its default
+  position, raise it over the video and replay the open-flicker on every track.
 - **"Show in Finder" button.** Reveals this medium's bookmark file in Finder.
   Nothing is written until the first bookmark is saved, so on a medium with no
   bookmarks yet it opens the folder the file will live in and says so in the
@@ -131,22 +142,24 @@ catches style problems but has never found a bug in this file.
 
     ./scripts/smoke-test.sh
 
-The script generates a 5-minute test video with ffmpeg, launches VLC on it with
-debug logging, opens the extension, and drives the dialog through the macOS
-accessibility API - add, sort order, rename, go, remove - asserting after each
-step against the bookmark file the extension actually wrote, which `jq` reads
-back - so a malformed file fails the run rather than being quietly tolerated.
+The script generates two test videos with ffmpeg, launches VLC on both as a
+playlist, opens the extension, and drives the dialog through the macOS
+accessibility API - add, sort order, rename, go, remove, then a track change and
+a stop - asserting after each step against the bookmark file the extension
+actually wrote, which `jq` reads back - so a malformed file fails the run rather
+than being quietly tolerated. The second video exists only so the playlist has
+somewhere to advance to; nothing touches it until the track-change phase.
 
 Requirements: macOS, VLC 3.x, `ffmpeg`, `jq`, and Accessibility permission for
 the terminal application you run it from (System Settings > Privacy & Security >
-Accessibility). It drives the real GUI and takes over the screen for about
-thirty seconds; it cannot run headless or over ssh.
+Accessibility). It drives the real GUI and takes over the screen for about a
+minute; it cannot run headless or over ssh.
 
 It refuses to start if VLC is already running, because it controls VLC's
-lifecycle. It touches exactly one bookmark file - the one keyed by the generated
-fixture's hash, read from VLC's own debug log - and deletes it afterwards. No
+lifecycle. It touches exactly one bookmark file per fixture - keyed by that
+fixture's hash, read from VLC's own debug log - and deletes both afterwards. No
 other file in the bookmarks directory is opened. If a file already exists at
-that path it aborts without touching it: the path is handed to the cleanup trap
+either path it aborts without touching it: a path is handed to the cleanup trap
 only after that check has passed, so a run can only ever delete a file it
 created itself.
 

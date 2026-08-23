@@ -31,12 +31,20 @@ readonly BOOKMARK_FILE_EXT=".json"
 
 # The dialog title, which is also the Extensions menu entry (descriptor.title).
 readonly DIALOG_TITLE="VLC Permanent Bookmarks"
+# Footer text. Two distinct strings on purpose: one describes the state, the
+# other answers a click. Sharing one made a refusal invisible.
+readonly MSG_NO_MEDIA="No media playing"
+readonly MSG_ADD_NO_MEDIA="Nothing to bookmark - no media is playing"
 
 # Fixture: 5 minutes of testsrc. The keyframe interval equals the frame rate, so
 # there is a keyframe every second and seeks land exactly on the second asked
 # for. Must exceed 64 KB so getFileHash() takes its normal two-chunk path.
 readonly FIXTURE_NAME="smoke-fixture.mp4"
 readonly FIXTURE_DURATION_S=300
+# A second medium, so a track change can be tested. A different duration means
+# different bytes and a different size, so it hashes to its own bookmark file.
+readonly FIXTURE2_NAME="smoke-fixture-2.mp4"
+readonly FIXTURE2_DURATION_S=180
 readonly FIXTURE_RESOLUTION="320x240"
 readonly FIXTURE_FPS=10
 readonly FIXTURE_KEYFRAME_FRAMES=10
@@ -244,6 +252,16 @@ vlc_seek() {
     sleep "$UI_SETTLE_S"
 }
 
+vlc_next() {
+    osa -e "tell application \"$VLC_APP_NAME\" to next" >/dev/null
+    sleep "$ACTION_SETTLE_S"
+}
+
+vlc_stop() {
+    osa -e "tell application \"$VLC_APP_NAME\" to stop" >/dev/null
+    sleep "$ACTION_SETTLE_S"
+}
+
 extension_menu_ready() {
     osa -e "tell application \"System Events\" to tell process \"$VLC_APP_NAME\" to return exists menu item \"$DIALOG_TITLE\" of menu 1 of menu item \"Extensions\" of menu 1 of menu bar item \"$VLC_APP_NAME\" of menu bar 1" 2>/dev/null || echo "false"
 }
@@ -311,6 +329,13 @@ dialog_has_button() {
     osa_retry "$(in_dialog "return exists button \"$1\"")"
 }
 
+# The footer label. "static text 1" is the footer and not the window title,
+# which reads back as "static text \"VLC Permanent Bookmarks\"" - verified
+# against three different messages on VLC 3.0.23.
+dialog_footer() {
+    osa_retry "$(in_dialog "return value of static text 1")"
+}
+
 dialog_row_count() {
     osa_retry "$(in_dialog "return count of rows of table 1 of scroll area 1")"
 }
@@ -345,11 +370,24 @@ bookmarks_filename() {
     jq -r '.filename // ""' "$BOOKMARK_FILE"
 }
 
+# The hash the extension logged most recently. getFileHash() logs one line per
+# load, so this names whichever medium was loaded last.
+latest_logged_hash() {
+    grep -o 'File hash: [0-9a-f]*' "$LOG_FILE" 2>/dev/null | tail -1 | awk '{print $3}' || true
+}
+
+# How many media the extension has hashed so far. input_changed() fires twice
+# per track change, so this is what proves the second call was skipped.
+hash_log_count() { grep -c 'File hash: ' "$LOG_FILE" || true; }
+
 # --- Setup and teardown ----------------------------------------------------
 
 WORK_DIR=""
 VLC_PID=""
 BOOKMARK_FILE=""
+# Every bookmark file this run claimed, all removed by cleanup(). A run touches
+# one per medium it plays.
+BOOKMARK_FILES=()
 
 cleanup() {
     local status=$?
@@ -365,8 +403,9 @@ cleanup() {
         done
         if vlc_is_running; then pkill -x "$VLC_APP_NAME" 2>/dev/null || true; fi
     fi
-    # Only ever the fixture's own bookmark file.
-    if [ -n "$BOOKMARK_FILE" ]; then rm -f "$BOOKMARK_FILE"; fi
+    # Only ever the fixtures' own bookmark files.
+    local claimed
+    for claimed in ${BOOKMARK_FILES[@]+"${BOOKMARK_FILES[@]}"}; do rm -f "$claimed"; done
     if [ -n "$WORK_DIR" ] && [ -d "$WORK_DIR" ]; then
         if [ "$status" -eq 0 ] && [ "$failure_seen" -eq 0 ]; then
             rm -rf "$WORK_DIR"
@@ -409,17 +448,24 @@ preflight() {
     input_watch_init
 }
 
+# generate_fixture <path> <duration_s>
+generate_fixture() {
+    ffmpeg -y -loglevel error \
+        -f lavfi -i "testsrc=duration=$2:size=$FIXTURE_RESOLUTION:rate=$FIXTURE_FPS" \
+        -g "$FIXTURE_KEYFRAME_FRAMES" -pix_fmt yuv420p "$1" \
+        || abort "ffmpeg failed to generate $1"
+    info "Generated $1 ($(wc -c < "$1" | tr -d ' ') bytes)"
+}
+
 make_fixture() {
     info ""
-    info "=== Fixture ==="
+    info "=== Fixtures ==="
     WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/vlc-bookmarks-smoke.XXXXXX")"
     FIXTURE="$WORK_DIR/$FIXTURE_NAME"
+    FIXTURE2="$WORK_DIR/$FIXTURE2_NAME"
     LOG_FILE="$WORK_DIR/vlc.log"
-    ffmpeg -y -loglevel error \
-        -f lavfi -i "testsrc=duration=$FIXTURE_DURATION_S:size=$FIXTURE_RESOLUTION:rate=$FIXTURE_FPS" \
-        -g "$FIXTURE_KEYFRAME_FRAMES" -pix_fmt yuv420p "$FIXTURE" \
-        || abort "ffmpeg failed to generate the fixture"
-    info "Generated $FIXTURE ($(wc -c < "$FIXTURE" | tr -d ' ') bytes)"
+    generate_fixture "$FIXTURE" "$FIXTURE_DURATION_S"
+    generate_fixture "$FIXTURE2" "$FIXTURE2_DURATION_S"
 }
 
 launch_vlc() {
@@ -431,7 +477,9 @@ launch_vlc() {
     # one playing the fixture and writing the log, another owning the menu bar
     # and the extension dialog. Every AppleScript below would then address the
     # wrong one.
-    open -a "$VLC_APP_BUNDLE" --args -vv --file-logging --logfile="$LOG_FILE" "$FIXTURE" \
+    # Both fixtures, so the playlist has somewhere to advance to. VLC plays the
+    # first; nothing reaches the second until the track-change test asks for it.
+    open -a "$VLC_APP_BUNDLE" --args -vv --file-logging --logfile="$LOG_FILE" "$FIXTURE" "$FIXTURE2" \
         || abort "failed to launch $VLC_APP_BUNDLE"
 
     local tries=0
@@ -495,16 +543,23 @@ open_dialog_and_resolve_bookmark_file() {
         abort "the extension never logged a file hash - see $LOG_FILE"
     fi
 
-    local candidate="$BOOKMARKS_DIR/$hash$BOOKMARK_FILE_EXT"
     info "Fixture hash: $hash"
+    claim_bookmark_file "$hash"
+}
+
+# claim_bookmark_file <hash> - point the bookmark helpers at that medium's file
+# and hand it to cleanup(), refusing outright if the file already exists.
+claim_bookmark_file() {
+    local candidate="$BOOKMARKS_DIR/$1$BOOKMARK_FILE_EXT"
     info "Bookmark file: $candidate"
     if [ -e "$candidate" ]; then
-        abort "a bookmark file already exists for the fixture hash. Refusing to overwrite pre-existing data at $candidate"
+        abort "a bookmark file already exists for hash $1. Refusing to overwrite pre-existing data at $candidate"
     fi
-    # Assigned only once the guard above has passed. cleanup() deletes
-    # BOOKMARK_FILE, so anything assigned before the guard would be destroyed by
+    # Assigned only once the guard above has passed. cleanup() deletes every
+    # claimed file, so anything recorded before the guard would be destroyed by
     # the EXIT trap on the very abort that refused to touch it.
     BOOKMARK_FILE="$candidate"
+    BOOKMARK_FILES+=("$candidate")
 }
 
 # --- Tests -----------------------------------------------------------------
@@ -655,6 +710,74 @@ test_rename_guards() {
     check "guard: reselecting the row commits the pending rename" "drifted,beta" "$(bookmarks_labels)"
 }
 
+# The dialog used to hide itself on every track change and had to be reopened
+# from the menu. It now reloads in place, so the window survives and its
+# contents follow the medium.
+test_track_change() {
+    local previous_file="$BOOKMARK_FILE"
+    local previous_count previous_hash previous_loads tries=0
+    previous_count="$(bookmarks_count)"
+    previous_hash="$(latest_logged_hash)"
+    previous_loads="$(hash_log_count)"
+
+    vlc_next
+
+    while [ "$tries" -lt "$LAUNCH_TIMEOUT_TRIES" ]; do
+        [ "$(latest_logged_hash)" != "$previous_hash" ] && break
+        sleep "$LAUNCH_POLL_S"
+        tries=$((tries + 1))
+    done
+
+    check "track change: the dialog stays open" "true" "$(dialog_exists)"
+
+    local hash
+    hash="$(latest_logged_hash)"
+    if [ "$hash" = "$previous_hash" ]; then
+        report_fail "track change: the extension loads the new medium" \
+            "a hash other than $previous_hash" "$hash"
+        return
+    fi
+    report_pass "track change: the extension loads the new medium"
+
+    # input_changed() fires twice per track change (measured on VLC 3.0.23),
+    # both times reporting the new item. One load, not two.
+    check "track change: the new medium is hashed exactly once" \
+        "$((previous_loads + 1))" "$(hash_log_count)"
+
+    info "Second fixture hash: $hash"
+    claim_bookmark_file "$hash"
+
+    check "track change: the list follows the new medium" "0" "$(dialog_row_count)"
+    check "track change: the default label resets" "Bookmark (1)" "$(dialog_get_input)"
+
+    vlc_pause
+    vlc_seek "$T_GAMMA"
+    dialog_set_input "second"
+    dialog_click "Add"
+
+    check "track change: a bookmark saves to the new medium's file" "1" "$(bookmarks_count)"
+    check "track change: the new medium's file name is recorded" "$FIXTURE2_NAME" "$(bookmarks_filename)"
+    check "track change: the previous medium's file is untouched" "$previous_count" \
+        "$(jq -r '.bookmarks | length' "$previous_file")"
+}
+
+# Stopping playback leaves the dialog up with nothing loaded. Add has no
+# position to read there and cannot be greyed out, so it must refuse.
+test_playback_stopped() {
+    vlc_stop
+
+    check "stop: the dialog stays open" "true" "$(dialog_exists)"
+    check "stop: the list is cleared" "0" "$(dialog_row_count)"
+    check "stop: the footer says why the list is empty" "$MSG_NO_MEDIA" "$(dialog_footer)"
+
+    dialog_set_input "orphan"
+    dialog_click "Add"
+    check "stop: Add writes nothing with no medium loaded" "1" "$(bookmarks_count)"
+    # The refusal must not repeat the message already on screen, or the click
+    # looks like it did nothing at all.
+    check "stop: Add answers the click with its own message" "$MSG_ADD_NO_MEDIA" "$(dialog_footer)"
+}
+
 test_no_lua_errors() {
     local errors
     errors="$(grep -ciE 'lua (error|warning)' "$LOG_FILE" || true)"
@@ -676,7 +799,8 @@ main() {
     local phase
     for phase in test_fresh_medium test_add test_add_ordering test_rename \
                  test_go test_remove test_default_label_index \
-                 test_label_whitespace test_rename_guards test_no_lua_errors; do
+                 test_label_whitespace test_rename_guards test_track_change \
+                 test_playback_stopped test_no_lua_errors; do
         "$phase"
         input_watch_check "$phase"
     done

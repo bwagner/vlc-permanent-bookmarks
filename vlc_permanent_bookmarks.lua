@@ -32,6 +32,11 @@ local MSG_LOAD_FAILED = "Existing bookmarks could not be read - not saving over 
 local MSG_LEGACY_FOUND = "Bookmarks are in the old format - run the migration script"
 local MSG_SAVE_BLOCKED = "Not saving - the existing bookmarks were not read"
 local MSG_SAVE_FAILED = "Bookmarks could not be saved"
+-- Two messages, not one: the first describes the state the dialog is sitting
+-- in, the second answers a click. Sharing a string made Add look dead - the
+-- footer already said it before the button was pressed.
+local MSG_NO_MEDIA = "No media playing"
+local MSG_ADD_NO_MEDIA = "Nothing to bookmark - no media is playing"
 -- Rename is two-step: Rename loads the label, Confirm commits it. Add never
 -- renames, so a pending rename cannot be committed by accident.
 local MSG_RENAME_PENDING = "Renaming #%d - click Confirm to commit"
@@ -102,20 +107,24 @@ end
 -- triggered by Start/Stop media input event
 function input_changed() -- ~ !important: deve essere qualcosa di veloce
     vlc.msg.dbg("[Input changed]")
-    if dialog_UI then
-        dialog_UI:hide()
-
-        input = nil
-        mediaFile = nil
-        mediaFile = {}
-        Bookmarks = nil
-        Bookmarks = {}
-        selectedBookmarkId = nil
-        bookmarkFilePath = nil
-        legacyBookmarkFilePath = nil
-        pendingFooterMessage = nil
-        bookmarksReadOnly = false
+    if not dialog_UI then
+        return
     end
+    -- Measured on VLC 3.0.23: a track change fires this twice, and both calls
+    -- already see the NEW item - there is no call that still reports the old
+    -- one. The uri is therefore what separates a real change from the
+    -- duplicate, and without this test every track change would hash 128 KB
+    -- and parse the bookmark file twice. It is also the whole cost of the
+    -- fast path, which is what the comment above asks for.
+    local item = vlc.input.item()
+    local uri = nil
+    if item then
+        uri = item:uri()
+    end
+    if uri == mediaFile.uri then
+        return
+    end
+    reloadCurrentMedium()
 end
 
 -- triggered by available media input meta data?
@@ -567,9 +576,52 @@ function showBookmarks()
     end
 end
 
+-- // Swap the dialog's contents to the medium playing now, without rebuilding
+-- the window. Keeping the same dialog is the point: a rebuild would drop it
+-- back at the default position, raise it over the video and replay the
+-- open-flicker on every track change. Defined here rather than beside
+-- input_changed() because resetLabelInput() is a local declared further up.
+function reloadCurrentMedium()
+    input = nil
+    mediaFile = {}
+    Bookmarks = {}
+    selectedBookmarkId = nil
+    bookmarkFilePath = nil
+    legacyBookmarkFilePath = nil
+    pendingFooterMessage = nil
+    bookmarksReadOnly = false
+
+    -- The no-input dialog has none of the widgets below, so there is nothing
+    -- to refresh in place - build the real one instead.
+    if not bookmarks_dialog['text_input'] then
+        show_gui()
+        return
+    end
+
+    if vlc.input.item() then
+        load_bookmarks()
+    end
+    showBookmarks()
+    resetLabelInput()
+    dlt_footer()
+    if pendingFooterMessage then
+        setFooter(pendingFooterMessage)
+    elseif not vlc.input.item() then
+        setFooter(MSG_NO_MEDIA)
+    end
+    collectgarbage()
+end
+
 -- Buttons callbacks -------------------------------------------------------------
 function addBookmark()
     dlt_footer()
+    -- Reachable since the dialog stays open across a track change: with nothing
+    -- playing there is no position to read, and vlc.var.get() on a nil input
+    -- raises. A button cannot be greyed out, so it refuses in the footer.
+    if not input then
+        setFooter(MSG_ADD_NO_MEDIA)
+        return
+    end
     -- An add shifts every index after the insertion point, so a rename loaded
     -- before it would commit to the wrong row. Adding cancels it.
     selectedBookmarkId = nil
