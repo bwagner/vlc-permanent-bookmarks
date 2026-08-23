@@ -51,6 +51,19 @@ entirely for anything with no local file name, such as a network stream. Files
 written before the field existed are still read normally and gain it on their
 next save.
 
+### Which medium does a bookmark file belong to?
+
+The `filename` field answers that for files written since it existed. For older
+ones, and to go the other way - given a medium, find its bookmark file -
+`scripts/media_hash.py` recomputes the hash:
+
+    ./scripts/media_hash.py "/path/to/video.mp4"      # hash, byte size, path
+    ./scripts/media_hash.py -q "/path/to/video.mp4"   # hash alone
+
+It is a port of the extension's `getFileHash()` and reads only the first and
+last 64 KB, so it is fast on large files and never writes anything. Verified
+against two hashes the extension itself produced.
+
 ### Bookmarks written by an older version
 
 Upstream stores each file as a Lua chunk and reads it back with `loadfile()`,
