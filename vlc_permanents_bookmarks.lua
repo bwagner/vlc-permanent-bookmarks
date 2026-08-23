@@ -245,6 +245,19 @@ function check_config()
     return true
 end
 
+-- // Persist Bookmarks, reporting a write failure instead of losing it
+function saveBookmarks()
+    local err = table_save(Bookmarks, bookmarkFilePath)
+    if not err then
+        return true
+    end
+    vlc.msg.err("Failed to save bookmarks to " .. tostring(bookmarkFilePath) .. ": " .. tostring(err))
+    if bookmarks_dialog['footer_message'] then
+        bookmarks_dialog['footer_message']:set_text(setMessageStyle("Bookmarks could not be saved"))
+    end
+    return false
+end
+
 -- // The Save Function
 function table_save(t, filePath)
     local function exportstring(s)
@@ -257,15 +270,22 @@ function table_save(t, filePath)
         return err
     end
 
+    -- Buffer the whole table and write it once, so a failing disk has a
+    -- single point to report instead of eleven unchecked writes.
+    local out = {}
+    local function w(str)
+        out[#out + 1] = str
+    end
+
     -- initiate variables for save procedure
     local tables, lookup = {t}, {
         [t] = 1
     }
-    file:write("return {" .. charE)
+    w("return {" .. charE)
 
     for idx, t in ipairs(tables) do
-        file:write("-- Table: {" .. idx .. "}" .. charE)
-        file:write("{" .. charE)
+        w("-- Table: {" .. idx .. "}" .. charE)
+        w("{" .. charE)
         local thandled = {}
 
         for i, v in ipairs(t) do
@@ -277,11 +297,11 @@ function table_save(t, filePath)
                     table.insert(tables, v)
                     lookup[v] = #tables
                 end
-                file:write(charS .. "{" .. lookup[v] .. "}," .. charE)
+                w(charS .. "{" .. lookup[v] .. "}," .. charE)
             elseif stype == "string" then
-                file:write(charS .. exportstring(v) .. "," .. charE)
+                w(charS .. exportstring(v) .. "," .. charE)
             elseif stype == "number" then
-                file:write(charS .. tostring(v) .. "," .. charE)
+                w(charS .. tostring(v) .. "," .. charE)
             end
         end
 
@@ -312,19 +332,29 @@ function table_save(t, filePath)
                             table.insert(tables, v)
                             lookup[v] = #tables
                         end
-                        file:write(str .. "{" .. lookup[v] .. "}," .. charE)
+                        w(str .. "{" .. lookup[v] .. "}," .. charE)
                     elseif stype == "string" then
-                        file:write(str .. exportstring(v) .. "," .. charE)
+                        w(str .. exportstring(v) .. "," .. charE)
                     elseif stype == "number" then
-                        file:write(str .. tostring(v) .. "," .. charE)
+                        w(str .. tostring(v) .. "," .. charE)
                     end
                 end
             end
         end
-        file:write("}," .. charE)
+        w("}," .. charE)
     end
-    file:write("}")
-    file:close()
+    w("}")
+
+    local ok, werr = file:write(table.concat(out))
+    if not ok then
+        file:close()
+        return werr or "write failed"
+    end
+    -- close() flushes, so it is the second place a full disk shows up
+    local closed, cerr = file:close()
+    if not closed then
+        return cerr or "close failed"
+    end
 end
 
 -- // The Load Function
@@ -465,7 +495,7 @@ function addBookmark()
                 end
                 table.insert(Bookmarks, i, b)
             end
-            table_save(Bookmarks, bookmarkFilePath)
+            saveBookmarks()
             showBookmarks()
             local next_index = tostring(getLastBookmarkIndex() + 1)
             bookmarks_dialog['text_input']:set_text('Bookmark (' .. next_index .. ')')
@@ -536,7 +566,7 @@ function removeBookmark()
                 table.remove(Bookmarks, idx - count)
                 count = count + 1
             end
-            table_save(Bookmarks, bookmarkFilePath)
+            saveBookmarks()
             showBookmarks()
         else
             bookmarks_dialog['footer_message']:set_text(setMessageStyle("Please select items you want remove"))
