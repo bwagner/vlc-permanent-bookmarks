@@ -120,8 +120,8 @@ end
 
 function getFileHash()
     -- Calculate media hash
-    local data_start = ""
-    local data_end = ""
+    local data_start
+    local data_end
     local size
     local chunk_size = 65536
     local ok
@@ -169,7 +169,7 @@ function getFileHash()
     -- local lo = mediaFile.bytesize
     local lo = size
     local hi = 0
-    local o, a, b, c, d, e, f, g, h
+    local a, b, c, d, e, f, g, h
     local hash_data = data_start .. data_end
     local max_size = 4294967296
     local overflow

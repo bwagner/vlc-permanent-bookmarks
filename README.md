@@ -78,7 +78,7 @@ this harness.
 
     luacheck .
 
-Baseline is **8 warnings, 0 errors**. Treat any count above 8 as a regression.
+Baseline is **5 warnings, 0 errors**. Treat any count above 5 as a regression.
 
 ## macOS notes
 
