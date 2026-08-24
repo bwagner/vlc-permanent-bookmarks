@@ -430,6 +430,39 @@ bookmarks_filename() {
     jq -r '.filename // ""' "$BOOKMARK_FILE"
 }
 
+# describe_bookmark_file <path> - one clause about a file this run refuses to
+# touch, for the abort messages below. The hash names no medium, so an abort
+# that printed only the path left the user to open the file by hand to find out
+# whose data it was - and the collision that provokes it recurs, because a
+# manually tested video with the fixture's bytes shares the fixture's hash. A
+# JSON file names its medium and its bookmark count; the old format carries no
+# name at all, which is itself worth saying.
+describe_bookmark_file() {
+    local path="$1" count name bytes
+    count="$(jq -r 'if (.bookmarks | type) == "array" then (.bookmarks | length) else empty end' "$path" 2>/dev/null)" || count=""
+    if [ -z "$count" ]; then
+        bytes="$(wc -c < "$path" | tr -d ' ')"
+        if jq -e . "$path" >/dev/null 2>&1; then
+            printf 'It is JSON, but holds no bookmarks array - %s bytes.' "$bytes"
+        else
+            printf 'It is not JSON - an old-format file of %s bytes.' "$bytes"
+        fi
+        return
+    fi
+    # Absent for a converted file and for a stream, so it cannot be relied on.
+    name="$(jq -r '.filename // ""' "$path" 2>/dev/null)"
+    if [ "$count" -eq 1 ]; then
+        printf 'It holds 1 bookmark'
+    else
+        printf 'It holds %s bookmarks' "$count"
+    fi
+    if [ -n "$name" ]; then
+        printf ' for "%s".' "$name"
+    else
+        printf ' for an unnamed medium.'
+    fi
+}
+
 # The hash the extension logged most recently. getFileHash() logs one line per
 # load, so this names whichever medium was loaded last.
 latest_logged_hash() {
@@ -563,9 +596,9 @@ plant_legacy_bookmark_file() {
     # A pre-existing file at either path is somebody's data, and the run would
     # both misread it and delete it on the way out.
     if [ -e "$LEGACY_FILE" ]; then
-        abort "a bookmark file already exists at $LEGACY_FILE. Refusing to overwrite pre-existing data"
+        abort "a bookmark file already exists at $LEGACY_FILE. $(describe_bookmark_file "$LEGACY_FILE") Refusing to overwrite pre-existing data"
     elif [ -e "$LEGACY_JSON_FILE" ]; then
-        abort "a bookmark file already exists at $LEGACY_JSON_FILE. Refusing to overwrite pre-existing data"
+        abort "a bookmark file already exists at $LEGACY_JSON_FILE. $(describe_bookmark_file "$LEGACY_JSON_FILE") Refusing to overwrite pre-existing data"
     fi
 
     mkdir -p "$BOOKMARKS_DIR"
@@ -676,7 +709,7 @@ claim_bookmark_file() {
     local candidate="$BOOKMARKS_DIR/$1$BOOKMARK_FILE_EXT"
     info "Bookmark file: $candidate"
     if [ -e "$candidate" ]; then
-        abort "a bookmark file already exists for hash $1. Refusing to overwrite pre-existing data at $candidate"
+        abort "a bookmark file already exists for hash $1 at $candidate. $(describe_bookmark_file "$candidate") Refusing to overwrite pre-existing data"
     fi
     # Assigned only once the guard above has passed. cleanup() deletes every
     # claimed file, so anything recorded before the guard would be destroyed by

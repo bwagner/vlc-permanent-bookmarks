@@ -198,7 +198,9 @@ at the third fixture's hash, and deletes all of them afterwards. No other file
 in the bookmarks directory is opened. If a file already exists at any of those
 paths it aborts without touching it: a path is handed to the cleanup trap only
 after that check has passed, so a run can only ever delete a file it created
-itself.
+itself. The abort describes the file it refused - how many bookmarks it holds
+and which medium it names - because the hash alone identifies nothing, and a
+video whose bytes match a fixture shares that fixture's bookmark file.
 
 ### Leave the machine alone while the test runs
 
