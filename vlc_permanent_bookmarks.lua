@@ -41,6 +41,10 @@ local MSG_SAVE_FAILED = "Bookmarks could not be saved"
 -- footer already said it before the button was pressed.
 local MSG_NO_MEDIA = "No media playing"
 local MSG_ADD_NO_MEDIA = "Nothing to bookmark - no media is playing"
+-- A third state hides behind the same nil input: a medium that is playing but
+-- that getFileHash() could not hash, a stream yielding no data. Saying nothing
+-- is playing would be untrue there, so it gets its own wording.
+local MSG_ADD_NO_HASH = "Nothing to bookmark - this medium cannot be identified"
 -- Rename is two-step: Rename loads the label, Confirm commits it. Add never
 -- renames, so a pending rename cannot be committed by accident.
 local MSG_RENAME_PENDING = "Renaming #%d - click Confirm to commit"
@@ -52,6 +56,13 @@ local MSG_REMOVE_PENDING_ONE = "Removing 1 bookmark - click Delete to commit"
 local MSG_REMOVE_PENDING_MANY = "Removing %d bookmarks - click Delete to commit"
 local MSG_REMOVE_NOT_PENDING = "Click Remove first to choose what to delete"
 local MSG_REMOVE_SELECTION_CHANGED = "Selection changed - reselect to delete"
+-- Show in Finder falls back to the folder whenever there is no bookmark file to
+-- reveal, which is equally the state with nothing playing at all - hence two
+-- wordings for the one branch.
+local MSG_FINDER_NO_FILE = "No bookmarks saved yet for this video - showing the folder"
+local MSG_FINDER_NO_MEDIA = "No media playing - showing the bookmarks folder"
+local MSG_FINDER_NO_DIR = "Bookmarks folder is unknown"
+local MSG_FINDER_FAILED = "Could not open Finder"
 -- Time formats. The stored form keeps milliseconds and is also what the
 -- duplicate check compares, so it must not lose precision. The list drops
 -- them: millisecond precision is noise for seeking, and the four-column
@@ -648,7 +659,11 @@ function addBookmark()
     -- playing there is no position to read, and vlc.var.get() on a nil input
     -- raises. A button cannot be greyed out, so it refuses in the footer.
     if not input then
-        setFooter(MSG_ADD_NO_MEDIA)
+        if vlc.input.item() then
+            setFooter(MSG_ADD_NO_HASH)
+        else
+            setFooter(MSG_ADD_NO_MEDIA)
+        end
         return
     end
     -- An add shifts every index after the insertion point, so a rename loaded
@@ -843,7 +858,8 @@ function fileExists(path)
 end
 
 -- Reveal this medium's bookmark file in Finder. Nothing is written until the
--- first bookmark is saved, so fall back to the folder the file will live in.
+-- first bookmark is saved, so fall back to the folder the file will live in -
+-- and with no medium loaded there is no "this video" to name in the message.
 function showInFinder()
     dlt_footer()
     disarmRemoval()
@@ -852,15 +868,18 @@ function showInFinder()
         command = FINDER_REVEAL_CMD .. shellQuote(bookmarkFilePath)
     elseif bookmarksDir then
         command = FINDER_OPEN_CMD .. shellQuote(bookmarksDir)
-        bookmarks_dialog['footer_message']:set_text(
-            setMessageStyle("No bookmarks saved yet for this video - showing the folder"))
+        local message = MSG_FINDER_NO_FILE
+        if not vlc.input.item() then
+            message = MSG_FINDER_NO_MEDIA
+        end
+        bookmarks_dialog['footer_message']:set_text(setMessageStyle(message))
     else
-        bookmarks_dialog['footer_message']:set_text(setMessageStyle("Bookmarks folder is unknown"))
+        bookmarks_dialog['footer_message']:set_text(setMessageStyle(MSG_FINDER_NO_DIR))
         return
     end
     if os.execute(command) ~= 0 then
         vlc.msg.err("Failed to reveal bookmarks in Finder: " .. command)
-        bookmarks_dialog['footer_message']:set_text(setMessageStyle("Could not open Finder"))
+        bookmarks_dialog['footer_message']:set_text(setMessageStyle(MSG_FINDER_FAILED))
     end
 end
 

@@ -126,7 +126,11 @@ the old bookmarks behind a new file.
   and "No media playing" in the footer, where **Add** refuses - with its own
   wording, "Nothing to bookmark - no media is playing", so that pressing it
   visibly answers rather than repeating the message already on screen -
-  instead of reading a position that does not exist. Rebuilding the window instead would
+  instead of reading a position that does not exist. A medium that is playing
+  but that cannot be hashed - a stream yielding no data - reaches the same
+  refusal by a different route, and gets a wording of its own, "Nothing to
+  bookmark - this medium cannot be identified", because nothing there has
+  stopped. Rebuilding the window instead would
   have been two lines, but it would drop the dialog back at its default
   position, raise it over the video and replay the open-flicker on every track.
 - **Remove asks before it deletes.** Upstream deletes the selected bookmarks the
@@ -145,7 +149,8 @@ the old bookmarks behind a new file.
 - **"Show in Finder" button.** Reveals this medium's bookmark file in Finder.
   Nothing is written until the first bookmark is saved, so on a medium with no
   bookmarks yet it opens the folder the file will live in and says so in the
-  footer. macOS only: it shells out to `open`.
+  footer. With nothing playing there is no "this video" to name, so that case
+  says so instead. macOS only: it shells out to `open`.
 
 ## Testing
 
