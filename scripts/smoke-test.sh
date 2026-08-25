@@ -257,7 +257,9 @@ usage() {
     cat <<USAGE
 Usage: ${0##*/} [-y|--yes] [--announce=$ANNOUNCE_END|$ANNOUNCE_BOTH|$ANNOUNCE_NONE]
 
-  -y, --yes            Start immediately, without the confirmation dialog.
+  -y, --yes            Run unattended: no confirmation dialog before the run and
+                       no summary dialog after it. The counts still print, and
+                       the exit code still carries the verdict.
       --announce=WHEN  Speak a short line when the run finishes. WHEN is
                        '$ANNOUNCE_END' (the default), '$ANNOUNCE_BOTH' to speak at the start
                        too, or '$ANNOUNCE_NONE' to stay silent.
@@ -373,7 +375,13 @@ APPLESCRIPT
 # No giving-up limit here: whoever started the run was told to walk away, so the
 # result waits until it is read. VLC is quit before this is shown, so nothing is
 # left holding the screen while it waits.
+#
+# Which is exactly why --yes skips it. A run started with --yes was started by
+# something that cannot click, so an unlimited modal would hang it forever, and
+# "skip the gate" would still not mean unattended. The counts are on stdout and
+# the exit code carries the verdict, so nothing is lost by staying silent.
 show_summary_dialog() {
+    [ "$assume_yes" -eq 0 ] || return 0
     local message script
     message="passed: $tests_passed   failed: $tests_failed   xfail: $tests_xfailed   xpass: $tests_xpassed"
     message="$message"$'\n\n'"Took $(format_duration "$1")."

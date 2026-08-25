@@ -76,6 +76,12 @@ source "$BLOCK"
 spoken=""
 speak() { spoken="${spoken}[$1]"; }
 
+# Same reason: the real osascript would put a modal dialog on the screen and
+# wait for a human, which is the opposite of a unit test. Counting invocations
+# is all these assertions need.
+dialogs_shown=0
+osascript() { dialogs_shown=$((dialogs_shown + 1)); }
+
 tests_passed=0
 tests_failed=0
 
@@ -175,6 +181,43 @@ announce="$ANNOUNCE_BOTH"; spoken=""; announce_start; check "$ANNOUNCE_BOTH: spe
 announce="$ANNOUNCE_BOTH"; spoken=""; announce_end;   check "$ANNOUNCE_BOTH: speaks at the end" "[$SPOKEN_END]" "$spoken"
 announce="$ANNOUNCE_NONE"; spoken=""; announce_start; announce_end
 check "$ANNOUNCE_NONE: silent at both ends" "" "$spoken"
+
+info ""
+info "=== The closing dialog, and what --yes means ==="
+
+# show_summary_dialog reads the tallies the bookkeeping block owns; that block is
+# not sourced here, so they are supplied directly.
+# shellcheck disable=SC2034  # all four are read by the sourced block
+summary_counts() { tests_xfailed=0; tests_xpassed=0; user_input_seen=0; }
+summary_counts
+harness_failed=0
+
+# The tallies show_summary_dialog reads are named the same as this suite's own
+# pass/fail counters, so it is called with the harness's names shadowed in a
+# subshell - otherwise formatting the message would corrupt the test totals.
+show_summary() (
+    tests_passed=1
+    tests_failed="$harness_failed"
+    dialogs_shown=0
+    show_summary_dialog 93 >/dev/null 2>&1
+    printf '%s' "$dialogs_shown"
+)
+
+assume_yes=0
+check "without --yes the summary dialog is shown"     "1" "$(show_summary)"
+assume_yes=1
+check "--yes skips the summary dialog"                "0" "$(show_summary)"
+harness_failed=1
+check "--yes skips it after a failing run too"        "0" "$(show_summary)"
+assume_yes=0
+check "a failing run still gets its dialog"           "1" "$(show_summary)"
+harness_failed=0
+
+# Deliberately not parsed_state: it reports announce too, and the section above
+# leaves that global at its last value, so asserting on it here would pass or
+# fail depending on test order rather than on parse_args.
+check "--yes is what the option sets"                 "1" \
+    "$( ( parse_args --yes >/dev/null 2>&1; printf '%s' "$assume_yes" ) )"
 
 info ""
 info "=== Summary ==="
