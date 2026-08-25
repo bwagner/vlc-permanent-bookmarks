@@ -267,7 +267,22 @@ The detection logic itself is unit-tested:
 It sources the monitoring block out of `smoke-test.sh` between that file's
 section markers and feeds it canned counter readings, so it needs no GUI, no VLC
 and no Accessibility permission, never steals focus, and finishes in well under
-a second. It is the only test here that could run in CI or a commit hook.
+a second.
+
+The run gate has its own suite, built the same way:
+
+    ./scripts/test-gate.sh
+
+37 assertions over the duration store, the duration formatting, option parsing
+and which end of a run gets announced. It points `HOME` at a scratch directory
+before reading the harness's constants, so the real duration history is never
+touched, and it replaces `speak()` after sourcing so the tests never make a
+sound. Both suites abort rather than testing nothing if the section markers they
+extract are renamed. The two dialogs themselves are not covered here - they need
+a human to click them, and a real `smoke-test.sh` run is what exercises them.
+
+These two are the only tests here that could run in CI or a commit hook; the GUI
+suite cannot, since it drives the real screen.
 
 Known-open bugs can be carried as `XFAIL` tests: they are expected to fail, do
 not fail the run, and turn into an `XPASS` prompting promotion once fixed. There
