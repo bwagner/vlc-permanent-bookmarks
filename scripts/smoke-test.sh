@@ -11,6 +11,11 @@
 # fixture's hash, read from VLC's own debug log. No other file under the
 # bookmarks directory is opened, read or written.
 #
+# The run is gated on a modal confirmation, because it takes over the screen for
+# minutes and needs the machine left alone. It reports back when it is done, by
+# voice and by a second dialog, on the assumption that whoever started it walked
+# away. Run with --help for the options that change either.
+#
 # Requirements: macOS, VLC 3.x, ffmpeg, jq, and Accessibility permission for
 # the terminal application running this script.
 
@@ -113,6 +118,42 @@ readonly PYTHON="python3"
 readonly EXPECTED_LOG_LEGACY_WARNING="Old-format bookmark file found:"
 readonly EXPECTED_LOG_LEGACY_REFUSAL="Refusing to save over bookmarks that were not read:"
 
+# The confirmation gate and the closing summary. The gate's own title is
+# deliberately not DIALOG_TITLE: that string is what the accessibility helpers
+# match to find the extension's window, and nothing should be able to confuse
+# the two.
+readonly GATE_DIALOG_TITLE="VLC Permanent Bookmarks - smoke test"
+readonly GATE_OK="Start"
+readonly GATE_CANCEL="Cancel"
+readonly SUMMARY_OK="OK"
+# A gate nobody answers must not leave the run waiting for ever. Timing out
+# counts as Cancel: a run that takes over the screen should never start
+# unwatched. The closing dialog has no such limit on purpose - by then the
+# point of it is that the machine was left alone, so it waits to be read.
+readonly GATE_TIMEOUT_S=300
+
+# Where the measured run durations accumulate, and how the estimate shown in
+# the gate is derived from them. Outside the repo so the working tree stays
+# clean; the numbers are machine-specific and would not travel usefully anyway.
+readonly DURATION_DIR="$HOME/.cache/vlc-permanent-bookmarks"
+readonly DURATION_FILE="$DURATION_DIR/durations"
+readonly DURATION_KEEP=5
+# Shown until this machine has recorded a run of its own.
+readonly DURATION_FALLBACK_S=120
+readonly SECONDS_PER_MINUTE=60
+# Below this, the estimate reads better in seconds than in rounded minutes.
+readonly DURATION_MINUTES_THRESHOLD_S=90
+
+# Spoken announcements. The end is the one that matters - by then whoever
+# started the run has walked away, and audio carries where a dialog does not.
+readonly ANNOUNCE_END="end"
+readonly ANNOUNCE_BOTH="both"
+readonly ANNOUNCE_NONE="none"
+readonly ANNOUNCE_DEFAULT="$ANNOUNCE_END"
+readonly SPOKEN_START="test starting"
+readonly SPOKEN_END="test done"
+readonly SAY_COMMAND="say"
+
 # --- Test bookkeeping ------------------------------------------------------
 
 tests_passed=0
@@ -182,12 +223,183 @@ xcheck() {
     fi
 }
 
+# --- Run gate, timing and announcements ------------------------------------
+#
+# This harness takes over the screen for minutes and needs the machine left
+# alone, and the only thing that used to say so was a line of preflight output
+# which scrolls past seconds before VLC seizes the display. The modal gate below
+# turns that sentence into a barrier: the run cannot be started unattended.
+#
+# It reverses a decision of 2026-08-23, which rejected "banner plus wait for a
+# keypress" because the keypress is itself HID input and would poison the
+# HIDIdleTime baseline. That objection was about ordering rather than about the
+# idea. input_watch_init now takes its baseline after launch_vlc instead of in
+# preflight, and launching VLC takes far longer than IDLE_AT_START_WARN_S, so
+# the click has aged out of the counter before monitoring begins.
+#
+# The separate objection recorded under "Hands-off monitoring" below still
+# stands and is a different case: a modal dialog held up *during* the run would
+# fight VLC for frontmost. This one closes before VLC is ever launched.
+
+assume_yes=0
+announce="$ANNOUNCE_DEFAULT"
+run_started_epoch=0
+
+usage() {
+    cat <<USAGE
+Usage: ${0##*/} [-y|--yes] [--announce=$ANNOUNCE_END|$ANNOUNCE_BOTH|$ANNOUNCE_NONE]
+
+  -y, --yes            Start immediately, without the confirmation dialog.
+      --announce=WHEN  Speak a short line when the run finishes. WHEN is
+                       '$ANNOUNCE_END' (the default), '$ANNOUNCE_BOTH' to speak at the start
+                       too, or '$ANNOUNCE_NONE' to stay silent.
+  -h, --help           Print this and exit.
+USAGE
+}
+
+parse_args() {
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            -y|--yes) assume_yes=1 ;;
+            --announce=*) announce="${1#--announce=}" ;;
+            --announce)
+                [ "$#" -ge 2 ] || abort "--announce needs a value"
+                announce="$2"
+                shift
+                ;;
+            -h|--help) usage; exit 0 ;;
+            *) usage >&2; abort "unknown option: $1" ;;
+        esac
+        shift
+    done
+    case "$announce" in
+        "$ANNOUNCE_END"|"$ANNOUNCE_BOTH"|"$ANNOUNCE_NONE") ;;
+        *) abort "--announce must be $ANNOUNCE_END, $ANNOUNCE_BOTH or $ANNOUNCE_NONE (got '$announce')" ;;
+    esac
+}
+
+speak() {
+    command -v "$SAY_COMMAND" >/dev/null 2>&1 || return 0
+    "$SAY_COMMAND" "$1" >/dev/null 2>&1 || true
+}
+
+announce_start() {
+    [ "$announce" = "$ANNOUNCE_BOTH" ] || return 0
+    speak "$SPOKEN_START"
+}
+
+announce_end() {
+    [ "$announce" = "$ANNOUNCE_END" ] || [ "$announce" = "$ANNOUNCE_BOTH" ] || return 0
+    speak "$SPOKEN_END"
+}
+
+# The median of the runs recorded so far, or nothing if this machine has none.
+# The upper median is taken for an even count, so the estimate never promises a
+# shorter wait than half the recorded runs actually took.
+estimated_duration_s() {
+    [ -r "$DURATION_FILE" ] || return 1
+    grep -E '^[0-9]+$' "$DURATION_FILE" 2>/dev/null | sort -n | awk '
+        { v[NR] = $1 }
+        END { if (NR == 0) exit 1; print v[int(NR / 2) + 1] }
+    '
+}
+
+# Only a run that reached the summary is recorded. One that aborted partway
+# would store a duration far shorter than a real run and understate every
+# estimate after it. Never fatal: a run must not fail over its own bookkeeping.
+record_duration() {
+    local kept
+    mkdir -p "$DURATION_DIR" 2>/dev/null || return 0
+    kept="$( { [ -r "$DURATION_FILE" ] && grep -E '^[0-9]+$' "$DURATION_FILE"; printf '%s\n' "$1"; } 2>/dev/null \
+        | tail -n "$DURATION_KEEP" )" || return 0
+    printf '%s\n' "$kept" > "$DURATION_FILE" 2>/dev/null || true
+}
+
+format_duration() {
+    if [ "$1" -lt "$DURATION_MINUTES_THRESHOLD_S" ]; then
+        printf 'about %d seconds' "$1"
+    else
+        printf 'about %d minutes' "$(( ($1 + SECONDS_PER_MINUTE / 2) / SECONDS_PER_MINUTE ))"
+    fi
+}
+
+# The dialog is displayed by System Events rather than by osascript itself.
+# Measured on macOS 26.3 / VLC 3.0.23: that puts a real AXDialog on screen,
+# 420x132 at x=654 of a 1728-wide display, i.e. horizontally centered. The
+# frontmost application stays the terminal in either form - "tell me to
+# activate" was measured to change nothing - so Start has to be clicked rather
+# than Entered, which suits a barrier that is meant to be deliberate.
+#
+# Returns non-zero if the run was declined.
+confirm_start() {
+    [ "$assume_yes" -eq 0 ] || return 0
+    local estimate message answer script
+    estimate="$(estimated_duration_s)" || estimate="$DURATION_FALLBACK_S"
+    message="VLC will launch and take over the screen for $(format_duration "$estimate")."
+    message="$message"$'\n\n'"Leave the keyboard, mouse and trackpad alone until it finishes."
+    script=$(cat <<'APPLESCRIPT'
+on run argv
+    set msg to item 1 of argv
+    set dialogTitle to item 2 of argv
+    set okLabel to item 3 of argv
+    set cancelLabel to item 4 of argv
+    set limit to (item 5 of argv) as integer
+    tell application "System Events"
+        try
+            set answer to display dialog msg with title dialogTitle buttons {cancelLabel, okLabel} default button okLabel with icon note giving up after limit
+        on error number -128
+            return cancelLabel
+        end try
+        if gave up of answer then return cancelLabel
+        return button returned of answer
+    end tell
+end run
+APPLESCRIPT
+)
+    answer="$(osascript -e "$script" \
+        "$message" "$GATE_DIALOG_TITLE" "$GATE_OK" "$GATE_CANCEL" "$GATE_TIMEOUT_S" 2>/dev/null)" \
+        || abort "could not show the confirmation dialog. Run with --yes to skip it."
+    [ "$answer" = "$GATE_OK" ]
+}
+
+# No giving-up limit here: whoever started the run was told to walk away, so the
+# result waits until it is read. VLC is quit before this is shown, so nothing is
+# left holding the screen while it waits.
+show_summary_dialog() {
+    local message script
+    message="passed: $tests_passed   failed: $tests_failed   xfail: $tests_xfailed   xpass: $tests_xpassed"
+    message="$message"$'\n\n'"Took $(format_duration "$1")."
+    if [ "$user_input_seen" -eq 1 ]; then
+        message="$message"$'\n\n'"The machine was used while the run was in progress."
+    fi
+    script=$(cat <<'APPLESCRIPT'
+on run argv
+    set msg to item 1 of argv
+    set dialogTitle to item 2 of argv
+    set okLabel to item 3 of argv
+    set failedCount to (item 4 of argv) as integer
+    tell application "System Events"
+        if failedCount is 0 then
+            display dialog msg with title dialogTitle buttons {okLabel} default button okLabel with icon note
+        else
+            display dialog msg with title dialogTitle buttons {okLabel} default button okLabel with icon stop
+        end if
+    end tell
+end run
+APPLESCRIPT
+)
+    osascript -e "$script" \
+        "$message" "$GATE_DIALOG_TITLE" "$SUMMARY_OK" "$tests_failed" >/dev/null 2>&1 || true
+}
+
 # --- Hands-off monitoring --------------------------------------------------
 #
 # Nothing here prevents a human from using the machine mid-run; macOS offers no
-# supported way to block input, and a modal "wait" dialog would be worse than
-# useless - it has to be frontmost in some process, and this harness needs VLC
-# frontmost to drive its menu bar. So interference is detected instead.
+# supported way to block input, and a modal "wait" dialog held up *during* the
+# run would be worse than useless - it has to be frontmost in some process, and
+# this harness needs VLC frontmost to drive its menu bar. So interference is
+# detected instead. (The confirmation gate above is not that: it closes before
+# VLC is launched, so there is nothing for it to take frontmost from.)
 #
 # IOHIDSystem's HIDIdleTime is nanoseconds since the last real hardware input
 # event. The accessibility actions dispatched below - AXPress, AXSetValue,
@@ -491,20 +703,25 @@ LEGACY_FILE=""
 LEGACY_JSON_FILE=""
 LEGACY_MD5=""
 
+# VLC is started through LaunchServices, so there is no owned pid to signal.
+# Preflight guarantees no VLC was running before this script started, so any
+# VLC alive now is the one this run launched. Called twice on a normal run -
+# once by main() so the screen is clear before the closing dialog is shown, and
+# again by the cleanup trap, where it finds nothing left to do.
+quit_vlc() {
+    vlc_is_running || return 0
+    osa -e "tell application \"$VLC_APP_NAME\" to quit" >/dev/null 2>&1 || true
+    local waited=0
+    while [ "$waited" -lt "$QUIT_TIMEOUT_TRIES" ] && vlc_is_running; do
+        sleep "$LAUNCH_POLL_S"
+        waited=$((waited + 1))
+    done
+    if vlc_is_running; then pkill -x "$VLC_APP_NAME" 2>/dev/null || true; fi
+}
+
 cleanup() {
     local status=$?
-    # VLC is started through LaunchServices, so there is no owned pid to signal.
-    # Preflight guarantees no VLC was running before this script started, so any
-    # VLC alive now is the one this run launched.
-    if vlc_is_running; then
-        osa -e "tell application \"$VLC_APP_NAME\" to quit" >/dev/null 2>&1 || true
-        local waited=0
-        while [ "$waited" -lt "$QUIT_TIMEOUT_TRIES" ] && vlc_is_running; do
-            sleep "$LAUNCH_POLL_S"
-            waited=$((waited + 1))
-        done
-        if vlc_is_running; then pkill -x "$VLC_APP_NAME" 2>/dev/null || true; fi
-    fi
+    quit_vlc
     # Only ever the fixtures' own bookmark files.
     local claimed
     for claimed in ${BOOKMARK_FILES[@]+"${BOOKMARK_FILES[@]}"}; do rm -f "$claimed"; done
@@ -550,7 +767,18 @@ preflight() {
     fi
     info "Extension under test: $resolved"
     info "Leave the keyboard, mouse and trackpad alone until the summary prints."
-    input_watch_init
+
+    # Last thing in preflight, so nothing that can abort on its own is left to
+    # discover after the run has been approved. One check still follows it:
+    # plant_legacy_bookmark_file() needs a fixture hash and so cannot run any
+    # earlier.
+    if ! confirm_start; then
+        info ""
+        info "Cancelled - nothing was run."
+        exit 0
+    fi
+    run_started_epoch="$(date +%s)"
+    announce_start
 }
 
 # generate_fixture <path> <duration_s>
@@ -1149,10 +1377,16 @@ test_no_lua_errors() {
 # --- Main ------------------------------------------------------------------
 
 main() {
+    parse_args "$@"
     preflight
     make_fixture
     plant_legacy_bookmark_file
     launch_vlc
+    # After launch_vlc, not in preflight: the click that answered the gate reset
+    # HIDIdleTime to zero, and taking the baseline here lets fixture generation
+    # and VLC's launch age it well past IDLE_AT_START_WARN_S first. Nothing is
+    # lost by starting late - the first input_watch_check is a whole phase away.
+    input_watch_init
     open_dialog_and_resolve_bookmark_file
 
     local phase
@@ -1165,9 +1399,13 @@ main() {
         input_watch_check "$phase"
     done
 
+    local elapsed=$(( $(date +%s) - run_started_epoch ))
+    record_duration "$elapsed"
+
     info ""
     info "=== Summary ==="
     info "passed: $tests_passed  failed: $tests_failed  xfail: $tests_xfailed  xpass: $tests_xpassed"
+    info "took:   $(format_duration "$elapsed") ($elapsed s)"
     if [ "$user_input_seen" -eq 1 ]; then
         info ""
         printf '%sThe machine was used while this run was in progress.%s\n' "$COLOR_WARN" "$COLOR_OFF"
@@ -1183,6 +1421,13 @@ main() {
     info "list selection rather than extending it, so the multi-select paths in"
     info "removeBookmark(), goToBookmark() and editBookmark() cannot be reached"
     info "from this harness."
+
+    # Clear the screen of VLC before anything asks to be read, then speak first
+    # and show the dialog second: the sound is what reaches someone who left the
+    # room, and it should not be waiting behind a click to do it.
+    quit_vlc
+    announce_end
+    show_summary_dialog "$elapsed"
 
     [ "$tests_failed" -eq 0 ] || exit 1
 }

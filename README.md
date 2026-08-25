@@ -160,6 +160,27 @@ catches style problems but has never found a bug in this file.
 
     ./scripts/smoke-test.sh
 
+It asks before it starts. A modal dialog names how long the run will take and
+tells you to leave the machine alone; nothing happens until you click **Start**,
+and **Cancel** exits without touching anything. When the run ends the harness
+speaks a short "test done", quits VLC, and shows a second dialog with the
+counts and the elapsed time - so you can walk away and still find out how it
+went. Two options change that:
+
+| Option | Effect |
+| --- | --- |
+| `-y`, `--yes` | Skip the opening dialog and start immediately. |
+| `--announce=end` | Speak at the end of the run only. The default. |
+| `--announce=both` | Also speak when the run starts. |
+| `--announce=none` | Stay silent. |
+
+The predicted duration is measured rather than hardcoded. Each completed run
+appends its own elapsed time to `~/.cache/vlc-permanent-bookmarks/durations`,
+the last five are kept, and the dialog shows their median - so the estimate
+tracks the machine it runs on. A run that aborts partway is not recorded, since
+its short duration would understate every estimate after it. Until a machine has
+recorded a run of its own, the dialog quotes a built-in fallback.
+
 The script generates three test videos with ffmpeg, launches VLC on all three as
 a playlist, opens the extension, and drives the dialog through the macOS
 accessibility API - add, sort order, rename, go, the two-step remove, then a
@@ -205,10 +226,13 @@ video whose bytes match a fixture shares that fixture's bookmark file.
 ### Leave the machine alone while the test runs
 
 Using the keyboard, mouse or trackpad during a run derails it: a click steals
-focus from the dialog, a keystroke lands in its text field. The harness cannot
-prevent that - macOS offers no supported way for a script to block input, and a
-modal "please wait" dialog would make things worse, since it has to be frontmost
-in some process while the harness needs VLC frontmost to drive its menu bar.
+focus from the dialog, a keystroke lands in its text field. The opening dialog
+is the first line of defense - it makes an unattended start impossible - but it
+closes before VLC is launched, and after that the harness cannot prevent
+interference. macOS offers no supported way for a script to block input, and a
+modal "please wait" dialog held up *during* the run would make things worse,
+since it has to be frontmost in some process while the harness needs VLC
+frontmost to drive its menu bar.
 
 So it detects interference instead. `IOHIDSystem`'s `HIDIdleTime` is nanoseconds
 since the last real hardware input, and the accessibility actions the harness
@@ -226,7 +250,15 @@ summary says the failures are unattributable and the run should be repeated.
 Two limits worth knowing: the counter cannot tell a harmless mouse twitch from a
 focus-stealing click, so any input taints the run equally; and if the machine was
 already in use as the run started, input during the first phase can go
-undetected, which preflight reports as a `NOTE`.
+undetected, which the harness reports as a `NOTE`.
+
+The baseline reading is deliberately taken *after* VLC has launched rather than
+during preflight. Clicking **Start** resets `HIDIdleTime` to zero, so sampling
+any earlier would print that `NOTE` on every single run and turn a real warning
+into noise. Generating the fixtures and launching VLC takes far longer than the
+threshold, so by the time monitoring begins the click has aged out of the
+counter. Nothing is lost by starting late: the first reading is taken a whole
+test phase later anyway.
 
 The detection logic itself is unit-tested:
 
