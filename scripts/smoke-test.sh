@@ -101,6 +101,14 @@ readonly AX_RETRY_DELAY_S=0.4
 # being used, which leaves a blind spot over the first phase.
 readonly NANOS_PER_SECOND=1000000000
 readonly IDLE_AT_START_WARN_S=3
+# Rather than warn about that blind spot, the baseline waits for it to close:
+# the counter is polled until it clears IDLE_AT_START_WARN_S, and only then is
+# the first reading kept. Clicking Start is itself input, so after the
+# confirmation gate the counter is near zero for a moment on every run. Giving
+# up after IDLE_SETTLE_TIMEOUT_S restores the old warning, since a machine
+# someone is actively using should not stall the run forever.
+readonly IDLE_SETTLE_POLL_S=1
+readonly IDLE_SETTLE_TIMEOUT_S=10
 
 # The legacy file has to be planted before VLC starts, which means knowing the
 # fixture's hash before the extension logs it. This is the repo's port of
@@ -412,7 +420,8 @@ APPLESCRIPT
 #
 # Blind spot: input is missed if the previous reading was already small enough
 # that the new one still exceeds it, which only happens when the machine was in
-# use moments before. input_watch_init reports that case separately.
+# use moments before. input_watch_init closes it by waiting for the counter to
+# rise before taking the baseline, and warns only if it never does.
 
 user_input_seen=0
 input_monitor_ok=1
@@ -423,18 +432,36 @@ hid_idle_ns() {
         | grep -o '"HIDIdleTime" = [0-9]*' | head -1 | awk '{print $3}'
 }
 
+# Takes the baseline reading, but not until the machine has been quiet for
+# IDLE_AT_START_WARN_S. A baseline sampled while somebody is still touching the
+# trackpad sits near zero, which is precisely the blind spot above - and the
+# hand that clicked Start is always still moving for a moment, so before this
+# wait existed the warning fired on essentially every gated run. Waiting turns
+# it into a short pause instead, and keeps the first phase as well covered as
+# the rest.
 input_watch_init() {
-    last_idle_ns="$(hid_idle_ns)"
-    if [ -z "$last_idle_ns" ]; then
-        input_monitor_ok=0
-        info "Hands-off monitoring unavailable: IOHIDSystem reports no HIDIdleTime."
-        return
-    fi
-    if [ "$last_idle_ns" -lt $(( IDLE_AT_START_WARN_S * NANOS_PER_SECOND )) ]; then
-        printf '%sNOTE%s the machine was in use as this run started, so input during\n' \
-            "$COLOR_WARN" "$COLOR_OFF"
-        printf '     the first phase may go undetected.\n'
-    fi
+    local waited=0 idle=""
+    while :; do
+        idle="$(hid_idle_ns)"
+        if [ -z "$idle" ]; then
+            input_monitor_ok=0
+            info "Hands-off monitoring unavailable: IOHIDSystem reports no HIDIdleTime."
+            return
+        fi
+        [ "$idle" -lt $(( IDLE_AT_START_WARN_S * NANOS_PER_SECOND )) ] || break
+        if [ "$waited" -ge "$IDLE_SETTLE_TIMEOUT_S" ]; then
+            printf '%sNOTE%s the machine was still in use after %ss of waiting, so input\n' \
+                "$COLOR_WARN" "$COLOR_OFF" "$IDLE_SETTLE_TIMEOUT_S"
+            printf '     during the first phase may go undetected.\n'
+            break
+        fi
+        if [ "$waited" -eq 0 ]; then
+            info "Waiting for the machine to go quiet before watching for interference..."
+        fi
+        waited=$(( waited + 1 ))
+        sleep "$IDLE_SETTLE_POLL_S"
+    done
+    last_idle_ns="$idle"
 }
 
 # input_watch_check <phase> - flag any hardware input since the last reading.
@@ -1386,8 +1413,10 @@ main() {
     launch_vlc
     # After launch_vlc, not in preflight: the click that answered the gate reset
     # HIDIdleTime to zero, and taking the baseline here lets fixture generation
-    # and VLC's launch age it well past IDLE_AT_START_WARN_S first. Nothing is
-    # lost by starting late - the first input_watch_check is a whole phase away.
+    # and VLC's launch age it first. Nothing is lost by starting late - the first
+    # input_watch_check is a whole phase away. The launch alone is not enough,
+    # measured 2026-08-25: a hand goes on moving for a second or two after the
+    # Start click, so input_watch_init waits for the counter to clear as well.
     input_watch_init
     open_dialog_and_resolve_bookmark_file
 

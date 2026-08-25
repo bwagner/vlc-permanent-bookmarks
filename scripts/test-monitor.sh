@@ -48,12 +48,18 @@ grep -q '^input_watch_check()' "$BLOCK" \
 
 # Take the real constants rather than restating them, so the two files cannot
 # drift apart silently.
-eval "$(grep -E '^readonly (NANOS_PER_SECOND|IDLE_AT_START_WARN_S)=' "$HARNESS")"
+eval "$(grep -E '^readonly (NANOS_PER_SECOND|IDLE_AT_START_WARN_S|IDLE_SETTLE_POLL_S|IDLE_SETTLE_TIMEOUT_S)=' "$HARNESS")"
 [ -n "${NANOS_PER_SECOND:-}" ] && [ -n "${IDLE_AT_START_WARN_S:-}" ] \
-    || abort "could not read NANOS_PER_SECOND / IDLE_AT_START_WARN_S from $HARNESS"
+    && [ -n "${IDLE_SETTLE_POLL_S:-}" ] && [ -n "${IDLE_SETTLE_TIMEOUT_S:-}" ] \
+    || abort "could not read the monitoring constants from $HARNESS"
 
 # shellcheck disable=SC1090
 source "$BLOCK"
+
+# input_watch_init waits for the machine to go quiet, one real sleep per poll.
+# Replaced after sourcing so the suite stays sub-second; the loop's behavior is
+# unaffected, only its pacing.
+sleep() { :; }
 
 # The code under test reads the counter inside $( ), so the queue of canned
 # readings has to live in a file: a shell variable would be consumed in the
@@ -114,12 +120,48 @@ feed 60000000000 "$IDLE_SMALL_NS" 3000000000 9000000000
 { input_watch_init; input_watch_check p1; input_watch_check p2; input_watch_check p3; } >"$OUT"
 check "the flag stays set after the counter recovers" "1" "$user_input_seen"
 
-# Machine still in use as the run starts: reported, but not itself a taint.
+# A quiet machine: the baseline is taken at once, with nothing said.
 reset_state
-feed "$IDLE_AT_START_SMALL_NS"
+feed 10000000000
 input_watch_init >"$OUT"
-check "a small idle at startup is reported" "yes" "$(output_contains "in use as this run started")"
-check "a small idle at startup is not itself a taint" "0" "$user_input_seen"
+check "a quiet machine needs no waiting" "" "$(cat "$OUT")"
+check "a quiet machine's first reading is the baseline" "10000000000" "$last_idle_ns"
+
+# In use at the start, then quiet: the baseline waits rather than warning, and
+# it is the settled reading that is kept, not the busy one.
+reset_state
+feed "$IDLE_AT_START_SMALL_NS" "$IDLE_AT_START_SMALL_NS" 4000000000
+input_watch_init >"$OUT"
+check "a busy start waits for quiet" "yes" "$(output_contains "Waiting for the machine")"
+check "a start that settles warns about nothing" "no" "$(output_contains "may go undetected")"
+check "the settled reading becomes the baseline" "4000000000" "$last_idle_ns"
+check "waiting is announced once, not once per poll" "1" "$(grep -c "Waiting for the machine" "$OUT")"
+
+# The settled baseline is the one input_watch_check compares against.
+reset_state
+feed "$IDLE_AT_START_SMALL_NS" 4000000000 "$IDLE_SMALL_NS"
+{ input_watch_init; input_watch_check p1; } >"$OUT"
+check "a drop after the wait is still flagged" "1" "$user_input_seen"
+
+# Never goes quiet: give up, warn, and carry on with the reading in hand.
+reset_state
+busy_readings=()
+for _ in $(seq 1 $(( IDLE_SETTLE_TIMEOUT_S + 1 ))); do
+    busy_readings+=("$IDLE_AT_START_SMALL_NS")
+done
+feed "${busy_readings[@]}"
+input_watch_init >"$OUT"
+check "a machine that never settles is reported" "yes" "$(output_contains "may go undetected")"
+check "giving up is not itself a taint" "0" "$user_input_seen"
+check "giving up still leaves monitoring enabled" "1" "$input_monitor_ok"
+check "giving up keeps the last reading as the baseline" "$IDLE_AT_START_SMALL_NS" "$last_idle_ns"
+
+# The counter becoming unreadable mid-wait is the same failure as at the start.
+reset_state
+feed "$IDLE_AT_START_SMALL_NS" ""
+input_watch_init >"$OUT"
+check "an unreadable counter mid-wait disables monitoring" "0" "$input_monitor_ok"
+check "an unreadable counter mid-wait says so" "yes" "$(output_contains "unavailable")"
 
 # ioreg returning nothing: monitoring disables itself instead of guessing.
 reset_state
