@@ -528,9 +528,11 @@ EOF
 }
 
 # Opens the extension dialog, retrying the menu click if it does not appear.
-# Re-clicking is gated on the dialog being absent: once the extension is active
-# its Extensions entry turns into a submenu, so a blind second click would not
-# mean the same thing.
+# Re-clicking is gated on the dialog being absent, because the Extensions entry
+# toggles: once the extension is active a blind second click deactivates it
+# again. It does NOT become a submenu - measured 2026-08-25, VLC's Cocoa provider
+# never builds one for any extension - so the gate is about the toggle, not about
+# the entry changing shape.
 dialog_open() {
     local attempt=0 tries
     while [ "$attempt" -lt "$DIALOG_OPEN_ATTEMPTS" ]; do

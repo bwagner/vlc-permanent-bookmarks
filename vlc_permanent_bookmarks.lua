@@ -85,7 +85,12 @@ function descriptor()
         url = 'https://github.com/JacopoBucchioni/vlc-permanents-bookmarks',
         shortdesc = "Bookmarks",
         description = "Save bookmarks for your media files and store them permanently.",
-        capabilities = {"menu", "input-listener"}
+        -- No "menu" capability: VLC's Cocoa provider never calls menu() and
+        -- never builds a submenu for an extension, so menu() and trigger_menu()
+        -- were dead code here (measured on 3.0.23, 2026-08-25). The flat
+        -- Extensions entry, which is what a macOS App Shortcut binds to, is
+        -- unaffected by dropping this.
+        capabilities = {"input-listener"}
     }
 end
 
@@ -112,16 +117,6 @@ function deactivate()
     if dialog_UI then
         dialog_UI:hide()
     end
-end
-
--- Called on mouseover on the extension in View menu
-function menu()
-    return {"Show dialog"}
-end
-
--- trigger function on menu() function call
-function trigger_menu(dlg_id)
-    show_gui()
 end
 
 -- related to capabilities={"input-listener"} in descriptor()

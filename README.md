@@ -89,6 +89,32 @@ Until a medium is converted, the extension shows its bookmarks as empty and
 refuses to save over them, saying so in the footer - so an Add can never strand
 the old bookmarks behind a new file.
 
+## Keyboard shortcut
+
+The extension cannot define a hotkey of its own. No key event reaches a VLC Lua
+extension - the Lua plugin has no callback registration for the core's
+`key-pressed` / `key-action` variables - and no widget takes an accelerator.
+Upstream's `menu()` / `trigger_menu()` looked like a route and is not: VLC's
+Cocoa provider never calls `menu()` and never builds a submenu for an extension,
+so both were dead code here and have been removed.
+
+What does work is a macOS **App Shortcut** bound to the menu entry by title. In
+System Settings > Keyboard > Keyboard Shortcuts... > App Shortcuts, click **+**:
+
+- **Application**: VLC
+- **Menu Title**: `VLC Permanent Bookmarks` - exactly, no trailing space
+- **Keyboard Shortcut**: anything VLC does not already use, e.g. Cmd-Shift-B
+
+The key then **opens** the dialog, and only opens it. Pressing it again while
+the dialog is up does nothing at all, even though clicking the same menu entry
+with the mouse does close it. Escape does not close the dialog either -
+**Cmd-W** does, while the dialog has focus. So the keyboard round trip is
+Cmd-Shift-B to open, Cmd-W to close.
+
+Measured on VLC 3.0.23 / macOS 26.3. Why key-equivalent dispatch stops while the
+extension is active is not explained: the menu item reports both its key
+equivalent and `enabled` in either state, and window focus makes no difference.
+
 ## Changes against upstream
 
 - **Four-column dialog layout.** Upstream put the list at row span 14 in a
