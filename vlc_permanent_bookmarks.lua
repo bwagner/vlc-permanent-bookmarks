@@ -105,7 +105,12 @@ local dialog_title = "VLC Permanent Bookmarks"
 function descriptor()
     return {
         title = dialog_title,
-        version = "1.0.1",
+        -- The fork's own numbering, deliberately outside upstream's
+        -- sequence: this diverged from its 1.0.1 by enough that sharing
+        -- a number would be a false claim, the bookmark file format
+        -- included. Do not sync it back. Unrelated to
+        -- BOOKMARK_FORMAT_VERSION, which versions the files on disk.
+        version = "2.0.0",
         author = "Jacopo Bucchioni (original), Bernhard Wagner (fork)",
         url = 'https://github.com/bwagner/vlc-permanent-bookmarks',
         shortdesc = "Bookmarks",

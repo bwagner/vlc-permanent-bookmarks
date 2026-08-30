@@ -89,6 +89,24 @@ Until a medium is converted, the extension shows its bookmarks as empty and
 refuses to save over them, saying so in the footer - so an Add can never strand
 the old bookmarks behind a new file.
 
+### Version numbers
+
+There are two, they move independently, and neither should be synced to the
+other.
+
+`descriptor().version` is the extension's own version, read by VLC from the
+descriptor and by nothing in this repo. It reads `2.0.0`. Upstream's last
+release was `1.0.1`, and this fork left that number behind rather than
+continuing the sequence: the bookmark file format changed, so a shared number
+would be a false claim about what the code does. It is not a count of anything
+upstream did.
+
+`"version"` inside a bookmark file is the on-disk format version, currently `1`.
+It changes only when the file layout does, which is why it stayed at `1` through
+the `2.0.0` bump. The migration script verifies it with `jq` and refuses a file
+that carries an unexpected value, so it is the one of the two that is actually
+read by code.
+
 ## Keyboard shortcut
 
 The extension cannot define a hotkey of its own. No key event reaches a VLC Lua
