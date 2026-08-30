@@ -3,8 +3,8 @@
 Personal fork of [JacopoBucchioni/vlc-permanents-bookmarks](https://github.com/JacopoBucchioni/vlc-permanents-bookmarks),
 a VLC Lua extension that saves per-media bookmarks and stores them permanently.
 
-Upstream was archived on 2024-04-04 and ships no license file. This fork exists
-because the dialog was unusable on macOS.
+Upstream was archived on 2024-04-04. This fork exists because the dialog was
+unusable on macOS. Both are GPLv3; see [License](#license).
 
 The first commit is upstream v1.0.1 verbatim, so every change here is visible as a
 diff against it.
@@ -347,3 +347,24 @@ trip over when editing the layout:
   through the grid.
 
 Files keep upstream's CRLF line endings.
+
+## License
+
+GPLv3. See [`LICENSE`](LICENSE).
+
+- Original extension: Copyright (C) 2022 Jacopo Bucchioni
+- Fork changes: Copyright (C) 2026 Bernhard Wagner
+
+This is a modified version of Jacopo Bucchioni's
+[vlc-permanents-bookmarks](https://github.com/JacopoBucchioni/vlc-permanents-bookmarks),
+released under the GPLv3 on the
+[VLC add-ons site](https://addons.videolan.org/p/1718547), where the listing's
+license field reads GPLv3. The repository itself carried no license file when
+this fork was made; he added one on 2026-08-30 and gave written permission for
+this fork to be published.
+
+GPLv3 is copyleft, so this fork carries the same license and cannot be
+relicensed. VLC itself is GPLv2-or-later, which GPLv3 is compatible with.
+
+What changed against the original is listed under
+[Changes against upstream](#changes-against-upstream).
