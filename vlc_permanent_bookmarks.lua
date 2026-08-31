@@ -40,9 +40,10 @@ local bookmarksDir = nil
 local FINDER_REVEAL_CMD = "open -R "
 local FINDER_OPEN_CMD = "open "
 -- Bookmark file format. The file is JSON data, decoded with the dkjson module
--- that VLC bundles, and is never executed. The previous format was a Lua chunk
--- read with loadfile(), so any bookmark file arriving from elsewhere could run
--- arbitrary shell commands as the user - VLC's Lua state has os.execute.
+-- that VLC bundles, and is never executed. The previous format was a Lua chunk:
+-- loadfile() compiled it and table_load() called the result, so any bookmark
+-- file arriving from elsewhere could run arbitrary shell commands as the user
+-- - VLC's Lua state has os.execute.
 local JSON_MODULE = "dkjson"
 local BOOKMARK_FILE_EXT = ".json"
 local BOOKMARK_FORMAT_VERSION = 1

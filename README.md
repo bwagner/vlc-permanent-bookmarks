@@ -70,11 +70,12 @@ against two hashes the extension itself produced.
 
 ### Bookmarks written by an older version
 
-Upstream stores each file as a Lua chunk and reads it back with `loadfile()`,
-which executes it. Bookmark files are keyed by media content, so they travel
-with a video and are the kind of thing that gets shared or synced - and any one
-of them could run arbitrary shell commands as your user. This fork reads JSON
-data instead and never executes a bookmark file.
+Upstream stores each file as a Lua chunk: `loadfile()` compiles it and
+`table_load()` then calls the result, so loading a bookmark file runs its
+contents. Bookmark files are keyed by media content, so they travel with a video
+and are the kind of thing that gets shared or synced - and any one of them could
+run arbitrary shell commands as your user. This fork reads JSON data instead and
+never executes a bookmark file.
 
 Old files are not read. Convert them once, with VLC closed:
 
@@ -146,10 +147,11 @@ equivalent and `enabled` in either state, and window focus makes no difference.
   produces duplicate default names.
 - **Plain-space separator** in list rows. Upstream used U+3164 Hangul filler,
   which renders zero-width in the macOS dialog font.
-- **JSON bookmark files.** Upstream's format is a Lua chunk loaded with
-  `loadfile()`, so reading a bookmark file executes it. Files are now JSON,
-  decoded with the `dkjson` module VLC bundles, and entries are validated before
-  the UI touches them. This is a format change: see the note above.
+- **JSON bookmark files.** Upstream's format is a Lua chunk that `loadfile()`
+  compiles and `table_load()` then calls, so loading a bookmark file runs it.
+  Files are now JSON, decoded with the `dkjson` module VLC bundles, and entries
+  are validated before the UI touches them. This is a format change: see the
+  note above.
 - **`hh:mm:ss` in the list rows.** Upstream shows milliseconds
   (`00:02:51.238`), which are noise for seeking and cost four characters of
   label room in a dialog whose width is fixed. The stored `formattedTime` keeps
